@@ -12,6 +12,9 @@ streamlit>=1.28.0
 # Optional: Performance optimization
 numba>=0.57.0  # JIT compilation for numerical functions
 
+# Statistical analysis
+scipy>=1.10.0  # For correlation and regression analysis
+
 # Development/Testing
 ipython>=8.12.0
 jupyter>=1.0.0

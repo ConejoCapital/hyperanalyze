@@ -14,7 +14,8 @@ from visualizations import (
     VolumeProfile,
     TraderAnalytics,
     OrderbookImpactAnalysis,
-    LiquidationAnalysis
+    LiquidationAnalysis,
+    OrderFlowImbalance
 )
 import os
 from pathlib import Path
@@ -181,7 +182,7 @@ def main():
     st.sidebar.info(f"**Time Range:**  \n{df['timestamp'].min().strftime('%Y-%m-%d %H:%M')}  \nto  \n{df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "🔥 Order Book Heatmap",
         "🔄 Maker vs Taker Flow",
         "📏 Spread Analysis",
@@ -189,6 +190,7 @@ def main():
         "👥 Trader Analytics",
         "🎯 Wallet Impact",
         "💥 Liquidations",
+        "📈 Order Flow Imbalance",
         "📋 Data Explorer"
     ])
     
@@ -1039,8 +1041,149 @@ def main():
                 
                 st.info("💡 **Interpretation:** These price ranges saw the most position closures. They represent key liquidation zones where leverage is concentrated.")
     
-    # ========== TAB 8: Data Explorer ==========
+    # ========== TAB 8: Order Flow Imbalance ==========
     with tab8:
+        st.markdown('<p class="sub-header">Order Flow Imbalance (OFI) Analysis</p>', 
+                    unsafe_allow_html=True)
+        st.markdown("Predictive metric: Net buying/selling pressure predicts short-term price movements")
+        
+        # Controls
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            selected_coin_ofi = st.selectbox(
+                "Select Coin",
+                options=df_coins['coin'].head(20).tolist(),
+                index=0,
+                key='coin_ofi'
+            )
+        
+        with col2:
+            time_window_ofi = st.selectbox(
+                "Time Window",
+                options=['1S', '5S', '10S', '30S', '1T', '5T'],
+                index=1,
+                key='time_window_ofi'
+            )
+        
+        with col3:
+            lag_periods = st.slider(
+                "Prediction Lag",
+                min_value=1,
+                max_value=20,
+                value=5,
+                help="Periods ahead to predict price change",
+                key='lag_periods_ofi'
+            )
+        
+        if selected_coin_ofi:
+            st.markdown("---")
+            st.markdown(f"<h2 style='text-align: center;'><b>OFI Analysis - {selected_coin_ofi}</b></h2>", 
+                       unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            with st.spinner("Calculating Order Flow Imbalance..."):
+                # Calculate OFI
+                df_ofi = loader.calculate_order_flow_imbalance(
+                    coin=selected_coin_ofi,
+                    time_window=time_window_ofi
+                )
+                
+                ofi_viz = OrderFlowImbalance(df_ofi, df)
+                
+                # Chart 1: OFI Time Series with Price
+                st.markdown("### 📈 OFI Time Series with Price")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig1 = ofi_viz.create_ofi_timeseries(selected_coin_ofi)
+                    st.plotly_chart(fig1, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Chart 2: OFI vs Future Price Change (Predictive Power)
+                st.markdown("### 🎯 OFI Predictive Power")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig2 = ofi_viz.create_ofi_price_correlation(selected_coin_ofi, lag_periods)
+                    st.plotly_chart(fig2, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Chart 3: Cumulative OFI
+                st.markdown("### 📊 Cumulative Flow Pressure")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig3 = ofi_viz.create_cumulative_ofi(selected_coin_ofi)
+                    st.plotly_chart(fig3, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Chart 4: OFI Distribution
+                st.markdown("### 📉 OFI Distribution")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig4 = ofi_viz.create_ofi_distribution(selected_coin_ofi)
+                    st.plotly_chart(fig4, use_container_width=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Interpretation guide
+            with st.expander("📖 How to Interpret Order Flow Imbalance", expanded=False):
+                st.markdown("""
+                ### 🧠 What is OFI?
+                
+                **Order Flow Imbalance (OFI)** measures net buying/selling pressure by aggregating signed trade volumes:
+                - **Positive OFI** = Net buying pressure (more/larger buy trades)
+                - **Negative OFI** = Net selling pressure (more/larger sell trades)
+                - **Formula:** `OFI = Σ(buy_volume) - Σ(sell_volume)` over time window
+                
+                ---
+                
+                ### 📊 Reading the Charts
+                
+                **1. OFI Time Series (Top Chart)**
+                - **Green bars** = Buying pressure (positive OFI)
+                - **Red bars** = Selling pressure (negative OFI)
+                - **Height** = Magnitude of imbalance
+                - **Compare with price**: Does OFI lead price?
+                
+                **2. OFI Predictive Power (Scatter)**
+                - **X-axis**: Current OFI value
+                - **Y-axis**: Future price change (N periods ahead)
+                - **Regression line**: Shows relationship strength
+                - **R²**: Predictive power (higher = better)
+                - **Positive slope**: OFI predicts direction
+                
+                **Key Insight:** If R² > 0.1, OFI has predictive power!
+                
+                **3. Cumulative OFI**
+                - **Rising trend**: Sustained buying pressure
+                - **Falling trend**: Sustained selling pressure
+                - **Divergence from price**: Potential reversal signal
+                
+                **4. OFI Distribution**
+                - **Skew > 0**: More buying pressure overall
+                - **Skew < 0**: More selling pressure overall
+                - **Wide spread**: High volatility in flow
+                
+                ---
+                
+                ### 🎯 Research Applications
+                
+                1. **Price Prediction**: Use OFI as leading indicator
+                2. **Liquidity Analysis**: Identify when smart money moves
+                3. **Market Impact**: Compare OFI to actual price changes
+                4. **Regime Detection**: OFI patterns change during different market conditions
+                5. **Execution**: Trade when OFI suggests directional momentum
+                
+                ---
+                
+                ### 📚 Academic Foundation
+                
+                OFI is widely studied in market microstructure:
+                - Cont, Kukanov, Stoikov (2014): "The Price Impact of Order Book Events"
+                - Used by HFTs for short-term prediction
+                - Correlation with future returns typically 0.1-0.3
+                """)
+    
+    # ========== TAB 9: Data Explorer ==========
+    with tab9:
         st.markdown('<p class="sub-header">Data Explorer</p>', 
                     unsafe_allow_html=True)
         

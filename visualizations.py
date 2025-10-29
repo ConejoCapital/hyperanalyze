@@ -1342,3 +1342,449 @@ class TraderAnalytics:
         )
         return fig
 
+"""
+Order Flow Imbalance Visualization Class
+Add this to visualizations.py
+"""
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
+from scipy import stats
+
+
+class OrderFlowImbalance:
+    """Visualizations for Order Flow Imbalance (OFI) analysis"""
+    
+    def __init__(self, df_ofi: pd.DataFrame, df_trades: pd.DataFrame = None):
+        """
+        Initialize with OFI data
+        
+        Args:
+            df_ofi: DataFrame from calculate_order_flow_imbalance()
+            df_trades: Optional raw trades DataFrame for additional analysis
+        """
+        self.df_ofi = df_ofi
+        self.df_trades = df_trades
+    
+    def create_ofi_timeseries(self, coin: str = None) -> go.Figure:
+        """
+        Create OFI time series with price overlay
+        
+        Args:
+            coin: Specific coin to visualize (if None, uses all data)
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_ofi.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        # Create subplots: OFI, Price, Volume
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=(
+                'Order Flow Imbalance (OFI)',
+                'Price',
+                'Trading Volume'
+            ),
+            row_heights=[0.4, 0.3, 0.3]
+        )
+        
+        # 1. OFI with color gradient
+        colors = ['red' if x < 0 else 'green' for x in df['OFI_volume']]
+        
+        fig.add_trace(
+            go.Bar(
+                x=df['timestamp'],
+                y=df['OFI_volume'],
+                name='OFI Volume',
+                marker_color=colors,
+                opacity=0.7,
+                showlegend=True
+            ),
+            row=1, col=1
+        )
+        
+        # Add zero line
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
+        
+        # 2. Price with candlestick
+        fig.add_trace(
+            go.Candlestick(
+                x=df['timestamp'],
+                open=df['open_price'],
+                high=df['high_price'],
+                low=df['low_price'],
+                close=df['close_price'],
+                name='Price',
+                increasing_line_color='green',
+                decreasing_line_color='red'
+            ),
+            row=2, col=1
+        )
+        
+        # 3. Volume bars
+        fig.add_trace(
+            go.Bar(
+                x=df['timestamp'],
+                y=df['total_volume'],
+                name='Volume',
+                marker_color='lightblue',
+                opacity=0.5
+            ),
+            row=3, col=1
+        )
+        
+        # Update layout
+        title_text = f"<b>Order Flow Imbalance Analysis - {coin if coin else 'All Assets'}</b>"
+        
+        fig.update_layout(
+            title=dict(
+                text=title_text,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            height=900,
+            template='plotly_dark',
+            hovermode='x unified',
+            xaxis3_title="Time",
+            yaxis_title="OFI (Net Buy Volume)",
+            yaxis2_title="Price",
+            yaxis3_title="Volume",
+            showlegend=True
+        )
+        
+        return fig
+    
+    def create_ofi_price_correlation(self, coin: str = None, lag_periods: int = 5) -> go.Figure:
+        """
+        Scatter plot showing OFI vs subsequent price changes
+        
+        Args:
+            coin: Specific coin to analyze
+            lag_periods: Number of periods to look ahead for price change
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_ofi.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        # Calculate forward price changes
+        if 'coin' in df.columns:
+            df['future_price_change'] = df.groupby('coin')['close_price'].shift(-lag_periods)
+            df['future_pct_change'] = ((df['future_price_change'] - df['close_price']) / df['close_price']) * 100
+        else:
+            df['future_price_change'] = df['close_price'].shift(-lag_periods)
+            df['future_pct_change'] = ((df['future_price_change'] - df['close_price']) / df['close_price']) * 100
+        
+        # Remove NaN
+        df = df.dropna(subset=['OFI_volume', 'future_pct_change'])
+        
+        # Calculate correlation
+        if len(df) > 0:
+            correlation = df['OFI_volume'].corr(df['future_pct_change'])
+            
+            # Linear regression
+            slope, intercept, r_value, p_value, std_err = stats.linregress(
+                df['OFI_volume'], df['future_pct_change']
+            )
+        else:
+            correlation = 0
+            slope, intercept, r_value = 0, 0, 0
+        
+        # Create scatter plot
+        fig = go.Figure()
+        
+        fig.add_trace(
+            go.Scatter(
+                x=df['OFI_volume'],
+                y=df['future_pct_change'],
+                mode='markers',
+                marker=dict(
+                    size=6,
+                    color=df['total_volume'],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title="Volume"),
+                    opacity=0.6
+                ),
+                text=[f"Time: {t}<br>Volume: {v:.2f}" 
+                      for t, v in zip(df['timestamp'], df['total_volume'])],
+                hovertemplate='<b>OFI:</b> %{x:.2f}<br>' +
+                              '<b>Future Δ%:</b> %{y:.2f}<br>' +
+                              '%{text}<extra></extra>',
+                name='Data Points'
+            )
+        )
+        
+        # Add regression line
+        if len(df) > 0:
+            x_range = np.array([df['OFI_volume'].min(), df['OFI_volume'].max()])
+            y_pred = slope * x_range + intercept
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=x_range,
+                    y=y_pred,
+                    mode='lines',
+                    line=dict(color='red', width=2, dash='dash'),
+                    name=f'Regression (R²={r_value**2:.3f})'
+                )
+            )
+        
+        # Update layout
+        title_text = f"<b>OFI vs Future Price Change ({lag_periods} periods ahead) - {coin if coin else 'All'}</b>"
+        annotation_text = f"Correlation: {correlation:.3f} | R²: {r_value**2:.3f}"
+        
+        fig.update_layout(
+            title=dict(
+                text=title_text,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Order Flow Imbalance (OFI)",
+            yaxis_title=f"Price Change % ({lag_periods} periods ahead)",
+            height=600,
+            template='plotly_dark',
+            annotations=[
+                dict(
+                    text=annotation_text,
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05,
+                    showarrow=False,
+                    font=dict(size=14, color="yellow"),
+                    xanchor='center'
+                )
+            ]
+        )
+        
+        # Add zero lines
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+        fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
+        
+        return fig
+    
+    def create_cumulative_ofi(self, coin: str = None) -> go.Figure:
+        """
+        Cumulative OFI showing net buying/selling pressure over time
+        
+        Args:
+            coin: Specific coin to analyze
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_ofi.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        # Create dual-axis chart
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.1,
+            subplot_titles=(
+                'Cumulative Order Flow Imbalance',
+                'Price'
+            )
+        )
+        
+        # Cumulative OFI
+        fig.add_trace(
+            go.Scatter(
+                x=df['timestamp'],
+                y=df['cumulative_OFI_volume'],
+                mode='lines',
+                name='Cumulative OFI',
+                line=dict(color='cyan', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(0,255,255,0.1)'
+            ),
+            row=1, col=1
+        )
+        
+        # Price
+        fig.add_trace(
+            go.Scatter(
+                x=df['timestamp'],
+                y=df['close_price'],
+                mode='lines',
+                name='Price',
+                line=dict(color='orange', width=2)
+            ),
+            row=2, col=1
+        )
+        
+        # Update layout
+        title_text = f"<b>Cumulative OFI vs Price - {coin if coin else 'All'}</b>"
+        
+        fig.update_layout(
+            title=dict(
+                text=title_text,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            height=700,
+            template='plotly_dark',
+            hovermode='x unified',
+            yaxis_title="Cumulative Net Volume",
+            yaxis2_title="Price"
+        )
+        
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
+        
+        return fig
+    
+    def create_ofi_heatmap(self, top_n: int = 10) -> go.Figure:
+        """
+        Heatmap of OFI across multiple assets over time
+        
+        Args:
+            top_n: Number of top assets to include
+            
+        Returns:
+            Plotly figure
+        """
+        if 'coin' not in self.df_ofi.columns:
+            return go.Figure().add_annotation(
+                text="Multi-asset heatmap requires data with multiple coins",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+        
+        df = self.df_ofi.copy()
+        
+        # Get top coins by total volume
+        top_coins = df.groupby('coin')['total_volume'].sum().nlargest(top_n).index
+        df = df[df['coin'].isin(top_coins)]
+        
+        # Pivot for heatmap
+        heatmap_data = df.pivot_table(
+            index='coin',
+            columns='timestamp',
+            values='OFI_intensity',
+            aggfunc='mean'
+        )
+        
+        # Create heatmap
+        fig = go.Figure(data=go.Heatmap(
+            z=heatmap_data.values,
+            x=heatmap_data.columns,
+            y=heatmap_data.index,
+            colorscale='RdYlGn',
+            zmid=0,
+            colorbar=dict(title="OFI Intensity"),
+            hovertemplate='<b>%{y}</b><br>' +
+                          'Time: %{x}<br>' +
+                          'OFI Intensity: %{z:.3f}<extra></extra>'
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text=f"<b>Order Flow Imbalance Heatmap - Top {top_n} Assets</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Time",
+            yaxis_title="Asset",
+            height=600,
+            template='plotly_dark'
+        )
+        
+        return fig
+    
+    def create_ofi_distribution(self, coin: str = None) -> go.Figure:
+        """
+        Distribution of OFI values with statistics
+        
+        Args:
+            coin: Specific coin to analyze
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_ofi.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        ofi_values = df['OFI_volume'].dropna()
+        
+        # Calculate statistics
+        mean_ofi = ofi_values.mean()
+        median_ofi = ofi_values.median()
+        std_ofi = ofi_values.std()
+        
+        # Create histogram
+        fig = go.Figure()
+        
+        fig.add_trace(
+            go.Histogram(
+                x=ofi_values,
+                nbinsx=50,
+                name='OFI Distribution',
+                marker_color='lightblue',
+                opacity=0.7,
+                hovertemplate='OFI Range: %{x}<br>Count: %{y}<extra></extra>'
+            )
+        )
+        
+        # Add mean line
+        fig.add_vline(
+            x=mean_ofi,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Mean: {mean_ofi:.2f}",
+            annotation_position="top"
+        )
+        
+        # Add median line
+        fig.add_vline(
+            x=median_ofi,
+            line_dash="dot",
+            line_color="green",
+            annotation_text=f"Median: {median_ofi:.2f}",
+            annotation_position="bottom"
+        )
+        
+        # Update layout
+        title_text = f"<b>OFI Distribution - {coin if coin else 'All Assets'}</b>"
+        stats_text = f"μ={mean_ofi:.2f} | σ={std_ofi:.2f} | Skew={(ofi_values.skew()):.2f}"
+        
+        fig.update_layout(
+            title=dict(
+                text=title_text,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Order Flow Imbalance",
+            yaxis_title="Frequency",
+            height=500,
+            template='plotly_dark',
+            annotations=[
+                dict(
+                    text=stats_text,
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05,
+                    showarrow=False,
+                    font=dict(size=12, color="yellow"),
+                    xanchor='center'
+                )
+            ]
+        )
+        
+        return fig
+

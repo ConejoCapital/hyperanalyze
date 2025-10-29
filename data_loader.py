@@ -370,6 +370,114 @@ class HyperliquidDataLoader:
         
         return df_coin
     
+    def calculate_order_flow_imbalance(self, coin: Optional[str] = None, 
+                                       time_window: str = '5S') -> pd.DataFrame:
+        """
+        Calculate Order Flow Imbalance (OFI) - a predictive metric for price movements
+        
+        OFI measures net buying/selling pressure by aggregating signed trade sizes.
+        Positive OFI = net buying pressure, Negative OFI = net selling pressure
+        
+        Args:
+            coin: Specific coin to analyze (None = all coins)
+            time_window: Time aggregation window ('1S', '5S', '30S', '1T', '5T')
+            
+        Returns:
+            DataFrame with OFI metrics per time window
+        """
+        if self.df_trades is None:
+            raise ValueError("Must load data first with load_misc_events()")
+        
+        print(f"Calculating Order Flow Imbalance (window={time_window})...")
+        
+        # Filter by coin if specified
+        df = self.df_trades.copy()
+        if coin:
+            df = df[df['coin'] == coin].copy()
+        
+        # Create signed volume (buy = +, sell = -)
+        df['signed_volume'] = np.where(df['is_buy'], df['sz'], -df['sz'])
+        df['signed_notional'] = np.where(df['is_buy'], df['notional'], -df['notional'])
+        
+        # Also track aggressive (taker) flow specifically
+        df['aggressive_signed_volume'] = np.where(
+            df['is_taker'], 
+            df['signed_volume'], 
+            0
+        )
+        
+        # Group by time window
+        df_grouped = df.groupby([
+            pd.Grouper(key='timestamp', freq=time_window),
+            'coin' if not coin else pd.Grouper(key='coin')
+        ]).agg({
+            'signed_volume': 'sum',  # OFI (volume-based)
+            'signed_notional': 'sum',  # OFI (dollar-based)
+            'aggressive_signed_volume': 'sum',  # Aggressive OFI
+            'px': ['mean', 'first', 'last', 'min', 'max'],  # Price stats
+            'sz': ['sum', 'count'],  # Total volume and trade count
+            'is_buy': 'sum',  # Number of buys
+            'is_sell': 'sum',  # Number of sells
+            'is_taker': 'sum',  # Number of aggressive trades
+            'notional': 'sum',  # Total notional
+        }).reset_index()
+        
+        # Flatten column names
+        df_grouped.columns = ['_'.join(col).strip('_') if col[1] else col[0] 
+                              for col in df_grouped.columns.values]
+        
+        # Rename for clarity
+        df_grouped = df_grouped.rename(columns={
+            'signed_volume_sum': 'OFI_volume',
+            'signed_notional_sum': 'OFI_notional',
+            'aggressive_signed_volume_sum': 'OFI_aggressive',
+            'px_mean': 'avg_price',
+            'px_first': 'open_price',
+            'px_last': 'close_price',
+            'px_min': 'low_price',
+            'px_max': 'high_price',
+            'sz_sum': 'total_volume',
+            'sz_count': 'num_trades',
+            'is_buy_sum': 'num_buys',
+            'is_sell_sum': 'num_sells',
+            'is_taker_sum': 'num_taker_trades',
+            'notional_sum': 'total_notional'
+        })
+        
+        # Calculate price change
+        if not coin:
+            df_grouped['price_change'] = df_grouped.groupby('coin')['close_price'].diff()
+            df_grouped['price_change_pct'] = df_grouped.groupby('coin')['close_price'].pct_change() * 100
+            
+            # Calculate cumulative OFI per coin
+            df_grouped['cumulative_OFI_volume'] = df_grouped.groupby('coin')['OFI_volume'].cumsum()
+            df_grouped['cumulative_OFI_notional'] = df_grouped.groupby('coin')['OFI_notional'].cumsum()
+        else:
+            df_grouped['price_change'] = df_grouped['close_price'].diff()
+            df_grouped['price_change_pct'] = df_grouped['close_price'].pct_change() * 100
+            
+            # Calculate cumulative OFI
+            df_grouped['cumulative_OFI_volume'] = df_grouped['OFI_volume'].cumsum()
+            df_grouped['cumulative_OFI_notional'] = df_grouped['OFI_notional'].cumsum()
+        
+        # Calculate OFI intensity (normalized by volume)
+        df_grouped['OFI_intensity'] = np.where(
+            df_grouped['total_volume'] > 0,
+            df_grouped['OFI_volume'] / df_grouped['total_volume'],
+            0
+        )
+        
+        # Buy/sell ratio
+        df_grouped['buy_sell_ratio'] = np.where(
+            df_grouped['num_sells'] > 0,
+            df_grouped['num_buys'] / df_grouped['num_sells'],
+            df_grouped['num_buys']
+        )
+        
+        print(f"Calculated OFI for {len(df_grouped)} time windows")
+        
+        return df_grouped
+    
     def save_processed_data(self, output_path: str = 'processed_data.parquet'):
         """
         Save processed data to Parquet for faster loading
