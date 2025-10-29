@@ -1434,7 +1434,7 @@ def main():
     
     # ========== TAB 10: Market Impact ==========
     with tab10:
-        st.markdown('<p class="sub-header">Market Impact Analysis (Kyle's Lambda)</p>', 
+        st.markdown('<p class="sub-header">Market Impact Analysis (Kyle&#39;s Lambda)</p>', 
                     unsafe_allow_html=True)
         st.markdown("Measure execution costs: How much do trades move prices?")
         
