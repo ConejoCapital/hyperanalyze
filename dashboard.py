@@ -25,7 +25,8 @@ from orderbook_visualizations import (
     LiquidityHeatmap,
     ImbalanceAnalysis,
     SpreadAnalysisOrderBook,
-    OrderLifecycleAnalysis
+    OrderLifecycleAnalysis,
+    OrderBookLadderVisualization
 )
 import os
 from pathlib import Path
@@ -1797,9 +1798,76 @@ def main():
                         else:
                             st.success(f"✅ Generated {len(df_snapshots)} order book snapshots")
                             
+                            # Create OrderBookLadderVisualization instance
+                            ladder_viz = OrderBookLadderVisualization(ob_loader)
+                            
+                            # ===== FEATURED: Animated Order Book Ladder =====
+                            st.markdown("## 🎬 Animated Order Book Ladder")
+                            st.markdown("Watch the order book evolve in real-time with play/pause controls")
+                            
+                            # Animation controls
+                            col1, col2, col3 = st.columns([1, 1, 2])
+                            with col1:
+                                num_frames = st.slider(
+                                    "Animation Frames",
+                                    min_value=10,
+                                    max_value=100,
+                                    value=50,
+                                    help="More frames = smoother but slower",
+                                    key='animation_frames'
+                                )
+                            with col2:
+                                num_ladder_levels = st.slider(
+                                    "Price Levels",
+                                    min_value=5,
+                                    max_value=30,
+                                    value=15,
+                                    help="Number of price levels to show",
+                                    key='ladder_levels'
+                                )
+                            
+                            with st.expander("🎬 Animated Order Book (Play to Start)", expanded=True):
+                                with st.spinner("Creating animation frames..."):
+                                    # Sample timestamps for animation
+                                    all_timestamps = df_snapshots['timestamp'].tolist()
+                                    step = max(1, len(all_timestamps) // num_frames)
+                                    animation_timestamps = all_timestamps[::step]
+                                    
+                                    if len(animation_timestamps) > 0:
+                                        fig_animated = ladder_viz.create_animated_order_book(
+                                            selected_coin_ob,
+                                            animation_timestamps,
+                                            num_levels=num_ladder_levels
+                                        )
+                                        st.plotly_chart(fig_animated, use_container_width=True)
+                                        
+                                        st.info(f"🎬 {len(animation_timestamps)} frames | Click ▶ Play to start animation")
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # ===== FEATURED: Static Order Book Ladder (Current State) =====
+                            st.markdown("## 📊 Order Book Ladder (Current State)")
+                            st.markdown("Traditional order book view showing bid/ask depth at each price level")
+                            
+                            with st.expander("📊 Current Order Book Ladder", expanded=True):
+                                with st.spinner("Rendering order book ladder..."):
+                                    # Use the last timestamp for "current" state
+                                    current_timestamp = df_snapshots['timestamp'].iloc[-1]
+                                    
+                                    fig_ladder = ladder_viz.create_order_book_ladder(
+                                        selected_coin_ob,
+                                        current_timestamp,
+                                        num_levels=25
+                                    )
+                                    st.plotly_chart(fig_ladder, use_container_width=True)
+                            
+                            st.markdown("---")
+                            st.markdown("## 📈 Additional Microstructure Analysis")
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
                             # ===== Chart 1: Depth Evolution =====
                             st.markdown("### 📈 Order Book Depth Evolution")
-                            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                            with st.expander("🔍 Expand for Full Screen View", expanded=False):
                                 depth_chart = OrderBookDepthChart(df_snapshots)
                                 fig1 = depth_chart.create_depth_evolution_chart()
                                 st.plotly_chart(fig1, use_container_width=True)

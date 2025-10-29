@@ -520,6 +520,366 @@ class SpreadAnalysisOrderBook:
         return fig
 
 
+class OrderBookLadderVisualization:
+    """Animated order book ladder - like a trading interface"""
+    
+    def __init__(self, orderbook_loader):
+        """
+        Initialize with order book loader
+        
+        Args:
+            orderbook_loader: OrderBookLoader instance with loaded events
+        """
+        self.loader = orderbook_loader
+    
+    def create_order_book_ladder(self, coin: str, timestamp: pd.Timestamp, num_levels: int = 20) -> go.Figure:
+        """
+        Create traditional order book ladder visualization
+        
+        Args:
+            coin: Coin symbol
+            timestamp: Time to show order book state
+            num_levels: Number of price levels to show on each side
+            
+        Returns:
+            Plotly Figure with order book ladder
+        """
+        # Get events up to this timestamp
+        df_events = self.loader.df_events[
+            (self.loader.df_events['coin'] == coin) &
+            (self.loader.df_events['datetime'] <= timestamp)
+        ].copy()
+        
+        # Build current order book state
+        active_orders = {'bids': {}, 'asks': {}}
+        
+        for _, event in df_events.iterrows():
+            side_key = 'bids' if event['is_bid'] else 'asks'
+            oid = event['oid']
+            
+            if event['is_open']:
+                active_orders[side_key][oid] = {
+                    'price': event['price'],
+                    'size': event['size']
+                }
+            elif event['is_filled'] or event['is_canceled']:
+                if oid in active_orders[side_key]:
+                    del active_orders[side_key][oid]
+        
+        # Aggregate by price level
+        from collections import defaultdict
+        bid_levels = defaultdict(float)
+        ask_levels = defaultdict(float)
+        
+        for oid, order in active_orders['bids'].items():
+            bid_levels[order['price']] += order['size']
+        
+        for oid, order in active_orders['asks'].items():
+            ask_levels[order['price']] += order['size']
+        
+        # Get top N levels
+        bid_prices = sorted(bid_levels.keys(), reverse=True)[:num_levels]
+        ask_prices = sorted(ask_levels.keys())[:num_levels]
+        
+        bid_data = [(p, bid_levels[p]) for p in bid_prices]
+        ask_data = [(p, ask_levels[p]) for p in ask_prices]
+        
+        # Create figure
+        fig = go.Figure()
+        
+        # Add bid levels (green bars, left side)
+        if bid_data:
+            bid_prices_list, bid_sizes = zip(*bid_data)
+            bid_cumulative = np.cumsum(bid_sizes)
+            
+            fig.add_trace(go.Bar(
+                x=[-size for size in bid_sizes],  # Negative for left side
+                y=bid_prices_list,
+                orientation='h',
+                name='Bids',
+                marker=dict(
+                    color='#00CC66',
+                    line=dict(color='rgba(255,255,255,0.3)', width=1)
+                ),
+                text=[f'{size:,.2f}' for size in bid_sizes],
+                textposition='inside',
+                hovertemplate='<b>Bid</b><br>Price: $%{y:,.4f}<br>Size: %{text}<extra></extra>'
+            ))
+        
+        # Add ask levels (red bars, right side)
+        if ask_data:
+            ask_prices_list, ask_sizes = zip(*ask_data)
+            ask_cumulative = np.cumsum(ask_sizes)
+            
+            fig.add_trace(go.Bar(
+                x=list(ask_sizes),  # Positive for right side
+                y=ask_prices_list,
+                orientation='h',
+                name='Asks',
+                marker=dict(
+                    color='#FF4444',
+                    line=dict(color='rgba(255,255,255,0.3)', width=1)
+                ),
+                text=[f'{size:,.2f}' for size in ask_sizes],
+                textposition='inside',
+                hovertemplate='<b>Ask</b><br>Price: $%{y:,.4f}<br>Size: %{text}<extra></extra>'
+            ))
+        
+        # Calculate mid-price and spread
+        best_bid = bid_prices[0] if bid_prices else 0
+        best_ask = ask_prices[0] if ask_prices else 0
+        mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else 0
+        spread = best_ask - best_bid if best_bid and best_ask else 0
+        spread_pct = (spread / mid_price * 100) if mid_price > 0 else 0
+        
+        # Add mid-price line
+        if mid_price > 0:
+            fig.add_hline(
+                y=mid_price,
+                line_dash="dash",
+                line_color="yellow",
+                line_width=2,
+                annotation_text=f"Mid: ${mid_price:,.4f}",
+                annotation_position="right"
+            )
+        
+        # Update layout
+        max_size = max(
+            [size for _, size in bid_data] + [size for _, size in ask_data]
+        ) if (bid_data and ask_data) else 100
+        
+        fig.update_layout(
+            template='plotly_dark',
+            title=dict(
+                text=f"<b>{coin} Order Book Ladder</b><br><sub>{timestamp.strftime('%Y-%m-%d %H:%M:%S')}</sub>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis=dict(
+                title="Size",
+                range=[-max_size * 1.2, max_size * 1.2],
+                showgrid=True,
+                gridcolor='rgba(128,128,128,0.2)',
+                zeroline=True,
+                zerolinecolor='white',
+                zerolinewidth=2
+            ),
+            yaxis=dict(
+                title="Price ($)",
+                showgrid=True,
+                gridcolor='rgba(128,128,128,0.2)'
+            ),
+            height=800,
+            barmode='overlay',
+            showlegend=True,
+            annotations=[
+                dict(
+                    text=f"<b>Best Bid:</b> ${best_bid:,.4f}<br><b>Best Ask:</b> ${best_ask:,.4f}<br><b>Spread:</b> ${spread:,.4f} ({spread_pct:.3f}%)",
+                    xref="paper", yref="paper",
+                    x=0.02, y=0.98,
+                    showarrow=False,
+                    font=dict(size=12, color='white'),
+                    align='left',
+                    bgcolor='rgba(0,0,0,0.7)',
+                    bordercolor='white',
+                    borderwidth=1
+                )
+            ]
+        )
+        
+        return fig
+    
+    def create_animated_order_book(self, coin: str, timestamps: List[pd.Timestamp], num_levels: int = 15) -> go.Figure:
+        """
+        Create animated order book visualization with playback controls
+        
+        Args:
+            coin: Coin symbol
+            timestamps: List of timestamps to animate through
+            num_levels: Number of price levels to show
+            
+        Returns:
+            Plotly Figure with animation
+        """
+        frames = []
+        
+        for i, timestamp in enumerate(timestamps):
+            # Get events up to this timestamp
+            df_events = self.loader.df_events[
+                (self.loader.df_events['coin'] == coin) &
+                (self.loader.df_events['datetime'] <= timestamp)
+            ].copy()
+            
+            # Build current order book state
+            active_orders = {'bids': {}, 'asks': {}}
+            
+            for _, event in df_events.iterrows():
+                side_key = 'bids' if event['is_bid'] else 'asks'
+                oid = event['oid']
+                
+                if event['is_open']:
+                    active_orders[side_key][oid] = {
+                        'price': event['price'],
+                        'size': event['size']
+                    }
+                elif event['is_filled'] or event['is_canceled']:
+                    if oid in active_orders[side_key]:
+                        del active_orders[side_key][oid]
+            
+            # Aggregate by price level
+            from collections import defaultdict
+            bid_levels = defaultdict(float)
+            ask_levels = defaultdict(float)
+            
+            for oid, order in active_orders['bids'].items():
+                bid_levels[order['price']] += order['size']
+            
+            for oid, order in active_orders['asks'].items():
+                ask_levels[order['price']] += order['size']
+            
+            # Get top N levels
+            bid_prices = sorted(bid_levels.keys(), reverse=True)[:num_levels]
+            ask_prices = sorted(ask_levels.keys())[:num_levels]
+            
+            bid_data = [(p, bid_levels[p]) for p in bid_prices] if bid_prices else []
+            ask_data = [(p, ask_levels[p]) for p in ask_prices] if ask_prices else []
+            
+            # Calculate metrics
+            best_bid = bid_prices[0] if bid_prices else 0
+            best_ask = ask_prices[0] if ask_prices else 0
+            mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else 0
+            spread = best_ask - best_bid if best_bid and best_ask else 0
+            spread_pct = (spread / mid_price * 100) if mid_price > 0 else 0
+            
+            # Create frame data
+            frame_data = []
+            
+            if bid_data:
+                bid_prices_list, bid_sizes = zip(*bid_data)
+                frame_data.append(go.Bar(
+                    x=[-size for size in bid_sizes],
+                    y=bid_prices_list,
+                    orientation='h',
+                    name='Bids',
+                    marker=dict(color='#00CC66'),
+                    text=[f'{size:,.1f}' for size in bid_sizes],
+                    textposition='inside',
+                    hovertemplate='<b>Bid</b><br>$%{y:,.4f}<br>%{text}<extra></extra>'
+                ))
+            
+            if ask_data:
+                ask_prices_list, ask_sizes = zip(*ask_data)
+                frame_data.append(go.Bar(
+                    x=list(ask_sizes),
+                    y=ask_prices_list,
+                    orientation='h',
+                    name='Asks',
+                    marker=dict(color='#FF4444'),
+                    text=[f'{size:,.1f}' for size in ask_sizes],
+                    textposition='inside',
+                    hovertemplate='<b>Ask</b><br>$%{y:,.4f}<br>%{text}<extra></extra>'
+                ))
+            
+            frames.append(go.Frame(
+                data=frame_data,
+                name=str(i),
+                layout=go.Layout(
+                    title_text=f"<b>{coin} Order Book</b><br><sub>{timestamp.strftime('%H:%M:%S.%f')[:-3]}</sub><br>" +
+                              f"<sub>Mid: ${mid_price:,.4f} | Spread: ${spread:,.4f} ({spread_pct:.3f}%)</sub>"
+                )
+            ))
+        
+        # Create initial figure
+        fig = go.Figure(
+            data=frames[0].data if frames else [],
+            frames=frames
+        )
+        
+        # Add animation controls
+        fig.update_layout(
+            template='plotly_dark',
+            title=dict(
+                text=f"<b>{coin} Animated Order Book</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis=dict(
+                title="Size",
+                showgrid=True,
+                gridcolor='rgba(128,128,128,0.2)',
+                zeroline=True,
+                zerolinecolor='white',
+                zerolinewidth=2
+            ),
+            yaxis=dict(
+                title="Price ($)",
+                showgrid=True,
+                gridcolor='rgba(128,128,128,0.2)'
+            ),
+            height=700,
+            barmode='overlay',
+            showlegend=True,
+            updatemenus=[{
+                'type': 'buttons',
+                'showactive': False,
+                'buttons': [
+                    {
+                        'label': '▶ Play',
+                        'method': 'animate',
+                        'args': [None, {
+                            'frame': {'duration': 100, 'redraw': True},
+                            'fromcurrent': True,
+                            'mode': 'immediate',
+                            'transition': {'duration': 50}
+                        }]
+                    },
+                    {
+                        'label': '⏸ Pause',
+                        'method': 'animate',
+                        'args': [[None], {
+                            'frame': {'duration': 0, 'redraw': False},
+                            'mode': 'immediate',
+                            'transition': {'duration': 0}
+                        }]
+                    }
+                ],
+                'x': 0.1,
+                'y': 1.15,
+                'xanchor': 'left',
+                'yanchor': 'top'
+            }],
+            sliders=[{
+                'active': 0,
+                'steps': [{
+                    'args': [[f.name], {
+                        'frame': {'duration': 0, 'redraw': True},
+                        'mode': 'immediate',
+                        'transition': {'duration': 0}
+                    }],
+                    'label': timestamps[int(f.name)].strftime('%H:%M:%S'),
+                    'method': 'animate'
+                } for f in frames],
+                'x': 0.1,
+                'len': 0.85,
+                'xanchor': 'left',
+                'y': 0,
+                'yanchor': 'top',
+                'pad': {'b': 10, 't': 50},
+                'currentvalue': {
+                    'visible': True,
+                    'prefix': 'Time: ',
+                    'xanchor': 'right',
+                    'font': {'size': 16, 'color': 'white'}
+                },
+                'transition': {'duration': 50}
+            }]
+        )
+        
+        return fig
+
+
 class OrderLifecycleAnalysis:
     """Order lifecycle and behavior analysis"""
     
