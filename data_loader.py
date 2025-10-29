@@ -598,6 +598,190 @@ class HyperliquidDataLoader:
         
         return pd.DataFrame(lag_results)
     
+    def calculate_market_impact(self, coin: str = None, min_trade_size: float = 100) -> pd.DataFrame:
+        """
+        Calculate market impact metrics (Kyle's Lambda)
+        
+        Market impact = how much a trade moves the price
+        Kyle's Lambda = dP / dQ (price change per unit volume)
+        
+        Args:
+            coin: Specific coin to analyze (None = all coins)
+            min_trade_size: Minimum trade size to include (notional USD)
+            
+        Returns:
+            DataFrame with impact metrics
+        """
+        if self.df_trades is None:
+            raise ValueError("Must load data first with load_misc_events()")
+        
+        print(f"Calculating market impact (Kyle's Lambda)...")
+        
+        df = self.df_trades.copy()
+        if coin:
+            df = df[df['coin'] == coin].copy()
+        
+        # Filter by minimum trade size
+        df = df[df['notional'] >= min_trade_size].copy()
+        
+        # Sort by timestamp and coin
+        df = df.sort_values(['coin', 'timestamp']).reset_index(drop=True)
+        
+        # Calculate price changes
+        df['prev_price'] = df.groupby('coin')['px'].shift(1)
+        df['price_change'] = df['px'] - df['prev_price']
+        df['price_change_pct'] = (df['price_change'] / df['prev_price']) * 100
+        df['abs_price_change_pct'] = df['price_change_pct'].abs()
+        
+        # Calculate time between trades (in seconds)
+        df['prev_timestamp'] = df.groupby('coin')['timestamp'].shift(1)
+        df['time_delta'] = (df['timestamp'] - df['prev_timestamp']).dt.total_seconds()
+        
+        # Sign the price change by trade direction
+        # If it's a buy (taker buy), positive price change is expected
+        df['signed_price_change'] = np.where(
+            df['is_buy'],
+            df['price_change'],
+            -df['price_change']
+        )
+        df['signed_price_change_pct'] = np.where(
+            df['is_buy'],
+            df['price_change_pct'],
+            -df['price_change_pct']
+        )
+        
+        # Calculate impact per unit (Kyle's Lambda proxy)
+        # Impact = price_change / trade_size
+        df['impact_per_unit'] = df['abs_price_change_pct'] / df['sz']
+        df['impact_per_1k_usd'] = (df['abs_price_change_pct'] / df['notional']) * 1000
+        df['impact_per_1m_usd'] = (df['abs_price_change_pct'] / df['notional']) * 1_000_000
+        
+        # Market impact score (considering direction)
+        df['directional_impact'] = df['signed_price_change_pct'] / df['notional'] * 1_000_000
+        
+        # Classify trade sizes
+        df['size_bucket'] = pd.cut(
+            df['notional'],
+            bins=[0, 1000, 5000, 10000, 50000, 100000, float('inf')],
+            labels=['<$1K', '$1K-5K', '$5K-10K', '$10K-50K', '$50K-100K', '>$100K']
+        )
+        
+        # Remove NaN (first trade per coin)
+        df = df.dropna(subset=['price_change', 'impact_per_unit'])
+        
+        # Remove outliers (>99th percentile)
+        df = df[df['abs_price_change_pct'] < df['abs_price_change_pct'].quantile(0.99)]
+        
+        print(f"Calculated impact for {len(df)} trades across {df['coin'].nunique()} coins")
+        
+        return df
+    
+    def calculate_lambda_by_asset(self, top_n: int = 20, min_trades: int = 50) -> pd.DataFrame:
+        """
+        Estimate Kyle's Lambda for each asset
+        
+        Args:
+            top_n: Number of top coins to analyze
+            min_trades: Minimum trades required per coin
+            
+        Returns:
+            DataFrame with lambda estimates per coin
+        """
+        if self.df_trades is None:
+            raise ValueError("Must load data first with load_misc_events()")
+        
+        print(f"Estimating Kyle's Lambda by asset...")
+        
+        # Get impact data
+        df_impact = self.calculate_market_impact()
+        
+        # Calculate lambda per coin
+        lambda_results = []
+        
+        for coin, group in df_impact.groupby('coin'):
+            if len(group) < min_trades:
+                continue
+            
+            # Simple average impact
+            avg_impact = group['impact_per_1m_usd'].mean()
+            median_impact = group['impact_per_1m_usd'].median()
+            
+            # Regression-based lambda (more robust)
+            from scipy import stats
+            if len(group) > 10:
+                # Regress abs(price_change_pct) on notional
+                slope, intercept, r_value, p_value, std_err = stats.linregress(
+                    group['notional'], 
+                    group['abs_price_change_pct']
+                )
+                lambda_regression = slope * 1_000_000  # Per $1M
+            else:
+                lambda_regression = avg_impact
+                r_value = 0
+            
+            lambda_results.append({
+                'coin': coin,
+                'avg_impact_per_1m': avg_impact,
+                'median_impact_per_1m': median_impact,
+                'lambda_regression': lambda_regression,
+                'r_squared': r_value**2,
+                'num_trades': len(group),
+                'total_volume_usd': group['notional'].sum(),
+                'avg_trade_size': group['notional'].mean(),
+                'std_impact': group['impact_per_1m_usd'].std()
+            })
+        
+        df_lambda = pd.DataFrame(lambda_results)
+        df_lambda = df_lambda.sort_values('total_volume_usd', ascending=False).head(top_n)
+        
+        print(f"Calculated lambda for {len(df_lambda)} coins")
+        
+        return df_lambda
+    
+    def calculate_impact_by_wallet(self, coin: str = None, top_n: int = 50) -> pd.DataFrame:
+        """
+        Calculate average market impact by wallet/trader
+        
+        Args:
+            coin: Specific coin to analyze
+            top_n: Number of top traders to return
+            
+        Returns:
+            DataFrame with impact metrics per wallet
+        """
+        if self.df_trades is None:
+            raise ValueError("Must load data first with load_misc_events()")
+        
+        print(f"Calculating market impact by wallet...")
+        
+        # Get impact data
+        df_impact = self.calculate_market_impact(coin=coin)
+        
+        # Group by wallet
+        wallet_impact = df_impact.groupby('address').agg({
+            'impact_per_1m_usd': ['mean', 'median'],
+            'notional': ['sum', 'mean', 'count'],
+            'abs_price_change_pct': 'mean',
+            'is_taker': 'sum'
+        }).reset_index()
+        
+        # Flatten columns
+        wallet_impact.columns = ['address', 'avg_impact', 'median_impact', 
+                                'total_volume', 'avg_trade_size', 'num_trades',
+                                'avg_price_move', 'num_taker_trades']
+        
+        # Calculate efficiency score (lower impact = better)
+        wallet_impact['impact_score'] = wallet_impact['avg_impact']
+        wallet_impact['taker_ratio'] = wallet_impact['num_taker_trades'] / wallet_impact['num_trades']
+        
+        # Filter and sort
+        wallet_impact = wallet_impact[wallet_impact['num_trades'] >= 10]
+        wallet_impact = wallet_impact.sort_values('total_volume', ascending=False).head(top_n)
+        
+        print(f"Calculated impact for {len(wallet_impact)} wallets")
+        
+        return wallet_impact
+    
     def save_processed_data(self, output_path: str = 'processed_data.parquet'):
         """
         Save processed data to Parquet for faster loading

@@ -2221,3 +2221,487 @@ class CorrelationMatrix:
         
         return fig
 
+"""
+Market Impact (Kyle's Lambda) Visualization Class
+"""
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
+from scipy import stats
+
+
+class MarketImpactAnalysis:
+    """Visualizations for market impact and Kyle's Lambda analysis"""
+    
+    def __init__(self, df_impact: pd.DataFrame, df_lambda: pd.DataFrame = None):
+        """
+        Initialize with market impact data
+        
+        Args:
+            df_impact: DataFrame from calculate_market_impact()
+            df_lambda: DataFrame from calculate_lambda_by_asset()
+        """
+        self.df_impact = df_impact
+        self.df_lambda = df_lambda
+    
+    def create_impact_scatter(self, coin: str = None) -> go.Figure:
+        """
+        Scatter plot: Trade Size vs Price Impact
+        
+        Args:
+            coin: Specific coin to visualize
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_impact.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        # Calculate regression
+        if len(df) > 10:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(
+                df['notional'], 
+                df['abs_price_change_pct']
+            )
+            lambda_estimate = slope * 1_000_000  # Per $1M
+        else:
+            slope, intercept, r_value = 0, 0, 0
+            lambda_estimate = 0
+        
+        # Create scatter
+        fig = go.Figure()
+        
+        fig.add_trace(
+            go.Scatter(
+                x=df['notional'],
+                y=df['abs_price_change_pct'],
+                mode='markers',
+                marker=dict(
+                    size=5,
+                    color=df['time_delta'],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title="Time Delta (s)"),
+                    opacity=0.6
+                ),
+                text=[f"Coin: {c}<br>Size: ${n:,.0f}<br>Impact: {i:.3f}%" 
+                      for c, n, i in zip(df['coin'], df['notional'], df['abs_price_change_pct'])],
+                hovertemplate='%{text}<extra></extra>',
+                name='Trades'
+            )
+        )
+        
+        # Add regression line
+        if len(df) > 10:
+            x_range = np.array([df['notional'].min(), df['notional'].max()])
+            y_pred = slope * x_range + intercept
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=x_range,
+                    y=y_pred,
+                    mode='lines',
+                    line=dict(color='red', width=2, dash='dash'),
+                    name=f'λ={lambda_estimate:.2f}% per $1M (R²={r_value**2:.3f})'
+                )
+            )
+        
+        # Update layout
+        title = f"<b>Market Impact: Trade Size vs Price Movement - {coin if coin else 'All Assets'}</b>"
+        
+        fig.update_layout(
+            title=dict(
+                text=title,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Trade Size (USD)",
+            yaxis_title="Absolute Price Change (%)",
+            height=600,
+            template='plotly_dark',
+            annotations=[
+                dict(
+                    text=f"Kyle's Lambda: {lambda_estimate:.2f}% per $1M | R²: {r_value**2:.3f}",
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05,
+                    showarrow=False,
+                    font=dict(size=14, color="yellow"),
+                    xanchor='center'
+                )
+            ]
+        )
+        
+        return fig
+    
+    def create_lambda_comparison(self) -> go.Figure:
+        """
+        Compare Kyle's Lambda across different assets
+        
+        Returns:
+            Plotly figure
+        """
+        if self.df_lambda is None:
+            return go.Figure().add_annotation(
+                text="Lambda by asset data required",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+        
+        df = self.df_lambda.sort_values('avg_impact_per_1m')
+        
+        # Create bar chart
+        fig = go.Figure()
+        
+        # Color by impact level (green = low impact, red = high impact)
+        colors = ['green' if x < df['avg_impact_per_1m'].median() else 'orange' 
+                  for x in df['avg_impact_per_1m']]
+        
+        fig.add_trace(
+            go.Bar(
+                x=df['coin'],
+                y=df['avg_impact_per_1m'],
+                marker_color=colors,
+                text=df['avg_impact_per_1m'].apply(lambda x: f'{x:.2f}%'),
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>' +
+                              'Impact: %{y:.2f}% per $1M<br>' +
+                              '<extra></extra>'
+            )
+        )
+        
+        # Add median line
+        median_impact = df['avg_impact_per_1m'].median()
+        fig.add_hline(
+            y=median_impact,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Median: {median_impact:.2f}%",
+            annotation_position="right"
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text="<b>Market Impact Comparison (Kyle's Lambda by Asset)</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Asset",
+            yaxis_title="Price Impact per $1M Traded (%)",
+            height=600,
+            template='plotly_dark',
+            xaxis=dict(tickangle=45),
+            showlegend=False
+        )
+        
+        return fig
+    
+    def create_impact_by_size_bucket(self, coin: str = None) -> go.Figure:
+        """
+        Impact analysis by trade size buckets
+        
+        Args:
+            coin: Specific coin to analyze
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_impact.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        # Group by size bucket
+        bucket_stats = df.groupby('size_bucket').agg({
+            'impact_per_1m_usd': ['mean', 'median', 'std'],
+            'notional': ['count', 'sum']
+        }).reset_index()
+        
+        # Flatten columns
+        bucket_stats.columns = ['size_bucket', 'mean_impact', 'median_impact', 'std_impact',
+                               'num_trades', 'total_volume']
+        
+        # Create grouped bar chart
+        fig = go.Figure()
+        
+        fig.add_trace(
+            go.Bar(
+                x=bucket_stats['size_bucket'],
+                y=bucket_stats['mean_impact'],
+                name='Mean Impact',
+                marker_color='lightblue',
+                error_y=dict(type='data', array=bucket_stats['std_impact'], visible=True),
+                text=bucket_stats['mean_impact'].apply(lambda x: f'{x:.2f}%'),
+                textposition='outside'
+            )
+        )
+        
+        fig.add_trace(
+            go.Bar(
+                x=bucket_stats['size_bucket'],
+                y=bucket_stats['median_impact'],
+                name='Median Impact',
+                marker_color='orange',
+                text=bucket_stats['median_impact'].apply(lambda x: f'{x:.2f}%'),
+                textposition='outside'
+            )
+        )
+        
+        # Update layout
+        title = f"<b>Market Impact by Trade Size - {coin if coin else 'All Assets'}</b>"
+        
+        fig.update_layout(
+            title=dict(
+                text=title,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Trade Size Bucket",
+            yaxis_title="Price Impact per $1M (%)",
+            height=600,
+            template='plotly_dark',
+            barmode='group',
+            showlegend=True
+        )
+        
+        return fig
+    
+    def create_temporal_impact(self, coin: str = None, window: int = 50) -> go.Figure:
+        """
+        Rolling average market impact over time
+        
+        Args:
+            coin: Specific coin to analyze
+            window: Rolling window size
+            
+        Returns:
+            Plotly figure
+        """
+        df = self.df_impact.copy()
+        if coin:
+            df = df[df['coin'] == coin]
+        
+        df = df.sort_values('timestamp')
+        
+        # Calculate rolling metrics
+        df['rolling_impact'] = df['impact_per_1m_usd'].rolling(window=window, min_periods=10).mean()
+        df['rolling_volume'] = df['notional'].rolling(window=window).sum()
+        
+        # Create figure with subplots
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.1,
+            subplot_titles=(
+                f'Rolling Market Impact ({window}-trade window)',
+                'Rolling Trade Volume'
+            ),
+            row_heights=[0.6, 0.4]
+        )
+        
+        # Rolling impact
+        fig.add_trace(
+            go.Scatter(
+                x=df['timestamp'],
+                y=df['rolling_impact'],
+                mode='lines',
+                name='Rolling Impact',
+                line=dict(color='cyan', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(0,255,255,0.1)'
+            ),
+            row=1, col=1
+        )
+        
+        # Add individual points
+        fig.add_trace(
+            go.Scatter(
+                x=df['timestamp'],
+                y=df['impact_per_1m_usd'],
+                mode='markers',
+                name='Individual Trades',
+                marker=dict(size=3, color='gray', opacity=0.3),
+                showlegend=False
+            ),
+            row=1, col=1
+        )
+        
+        # Rolling volume
+        fig.add_trace(
+            go.Bar(
+                x=df['timestamp'],
+                y=df['rolling_volume'],
+                name='Rolling Volume',
+                marker_color='lightgreen',
+                opacity=0.6
+            ),
+            row=2, col=1
+        )
+        
+        # Update layout
+        title = f"<b>Temporal Market Impact Analysis - {coin if coin else 'All Assets'}</b>"
+        
+        fig.update_layout(
+            title=dict(
+                text=title,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            height=800,
+            template='plotly_dark',
+            hovermode='x unified',
+            yaxis_title="Impact per $1M (%)",
+            yaxis2_title="Volume (USD)",
+            showlegend=True
+        )
+        
+        return fig
+    
+    def create_wallet_impact_efficiency(self, df_wallet_impact: pd.DataFrame) -> go.Figure:
+        """
+        Wallet execution efficiency (lower impact = better)
+        
+        Args:
+            df_wallet_impact: DataFrame from calculate_impact_by_wallet()
+            
+        Returns:
+            Plotly figure
+        """
+        df = df_wallet_impact.copy().head(30)
+        
+        # Create scatter: Volume vs Impact
+        fig = go.Figure()
+        
+        fig.add_trace(
+            go.Scatter(
+                x=df['total_volume'],
+                y=df['avg_impact'],
+                mode='markers',
+                marker=dict(
+                    size=df['avg_trade_size'] / 100,  # Scale for visibility
+                    color=df['taker_ratio'],
+                    colorscale='RdYlGn_r',
+                    showscale=True,
+                    colorbar=dict(title="Taker Ratio"),
+                    opacity=0.7,
+                    line=dict(color='white', width=1)
+                ),
+                text=[f"Wallet: {a[:16]}...<br>Volume: ${v:,.0f}<br>Impact: {i:.3f}%<br>Avg Size: ${s:,.0f}" 
+                      for a, v, i, s in zip(df['address'], df['total_volume'], 
+                                           df['avg_impact'], df['avg_trade_size'])],
+                hovertemplate='%{text}<extra></extra>',
+                name='Wallets'
+            )
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text="<b>Wallet Execution Efficiency</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Total Trading Volume (USD)",
+            yaxis_title="Average Market Impact per $1M (%)",
+            xaxis_type='log',
+            height=600,
+            template='plotly_dark',
+            annotations=[
+                dict(
+                    text="Lower impact = Better execution | Size = Avg trade size | Color = Taker ratio",
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05,
+                    showarrow=False,
+                    font=dict(size=12, color="gray"),
+                    xanchor='center'
+                )
+            ]
+        )
+        
+        return fig
+    
+    def create_liquidity_quality_matrix(self) -> go.Figure:
+        """
+        Matrix showing volume, impact, and efficiency for top assets
+        
+        Returns:
+            Plotly figure
+        """
+        if self.df_lambda is None:
+            return go.Figure().add_annotation(
+                text="Lambda by asset data required",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+        
+        df = self.df_lambda.head(15)
+        
+        # Create bubble chart: Volume vs Impact
+        fig = go.Figure()
+        
+        fig.add_trace(
+            go.Scatter(
+                x=df['total_volume_usd'],
+                y=df['avg_impact_per_1m'],
+                mode='markers+text',
+                marker=dict(
+                    size=df['num_trades'] / 10,  # Scale by number of trades
+                    color=df['r_squared'],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title="R²"),
+                    opacity=0.7,
+                    line=dict(color='white', width=2)
+                ),
+                text=df['coin'],
+                textposition='top center',
+                textfont=dict(size=12, color='white'),
+                hovertemplate='<b>%{text}</b><br>' +
+                              'Volume: $%{x:,.0f}<br>' +
+                              'Impact: %{y:.2f}% per $1M<br>' +
+                              '<extra></extra>'
+            )
+        )
+        
+        # Add quadrant lines
+        median_volume = df['total_volume_usd'].median()
+        median_impact = df['avg_impact_per_1m'].median()
+        
+        fig.add_vline(x=median_volume, line_dash="dash", line_color="gray", opacity=0.5)
+        fig.add_hline(y=median_impact, line_dash="dash", line_color="gray", opacity=0.5)
+        
+        # Add quadrant labels
+        fig.add_annotation(
+            text="High Volume<br>Low Impact<br>(BEST)",
+            x=df['total_volume_usd'].max() * 0.8,
+            y=df['avg_impact_per_1m'].min() * 1.2,
+            showarrow=False,
+            font=dict(size=10, color="green")
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text="<b>Liquidity Quality Matrix</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Total Trading Volume (USD)",
+            yaxis_title="Average Market Impact per $1M (%)",
+            xaxis_type='log',
+            height=700,
+            template='plotly_dark',
+            showlegend=False
+        )
+        
+        return fig
+

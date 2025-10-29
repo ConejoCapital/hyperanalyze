@@ -16,7 +16,8 @@ from visualizations import (
     OrderbookImpactAnalysis,
     LiquidationAnalysis,
     OrderFlowImbalance,
-    CorrelationMatrix
+    CorrelationMatrix,
+    MarketImpactAnalysis
 )
 import os
 from pathlib import Path
@@ -183,7 +184,7 @@ def main():
     st.sidebar.info(f"**Time Range:**  \n{df['timestamp'].min().strftime('%Y-%m-%d %H:%M')}  \nto  \n{df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
         "🔥 Order Book Heatmap",
         "🔄 Maker vs Taker Flow",
         "📏 Spread Analysis",
@@ -193,6 +194,7 @@ def main():
         "💥 Liquidations",
         "📈 Order Flow Imbalance",
         "🔗 Asset Correlation",
+        "💎 Market Impact",
         "📋 Data Explorer"
     ])
     
@@ -1430,8 +1432,216 @@ def main():
             - Market-wide events cause temporary spikes
             """)
     
-    # ========== TAB 10: Data Explorer ==========
+    # ========== TAB 10: Market Impact ==========
     with tab10:
+        st.markdown('<p class="sub-header">Market Impact Analysis (Kyle's Lambda)</p>', 
+                    unsafe_allow_html=True)
+        st.markdown("Measure execution costs: How much do trades move prices?")
+        
+        # Controls
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            selected_coin_impact_analysis = st.selectbox(
+                "Select Coin for Detailed Analysis",
+                options=['All Coins'] + df_coins['coin'].head(20).tolist(),
+                index=0,
+                key='coin_impact_analysis'
+            )
+        
+        with col2:
+            min_trade_size = st.number_input(
+                "Min Trade Size (USD)",
+                min_value=10,
+                max_value=10000,
+                value=100,
+                step=50,
+                key='min_trade_size'
+            )
+        
+        st.markdown("---")
+        st.markdown(f"<h2 style='text-align: center;'><b>Market Impact Analysis - {selected_coin_impact_analysis}</b></h2>", 
+                   unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        with st.spinner("Calculating market impact..."):
+            # Calculate impact
+            coin_filter = None if selected_coin_impact_analysis == 'All Coins' else selected_coin_impact_analysis
+            df_impact = loader.calculate_market_impact(coin=coin_filter, min_trade_size=min_trade_size)
+            df_lambda = loader.calculate_lambda_by_asset(top_n=20)
+            
+            impact_viz = MarketImpactAnalysis(df_impact, df_lambda)
+            
+            # Chart 1: Impact Scatter
+            st.markdown("### 📈 Trade Size vs Price Impact")
+            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                fig1 = impact_viz.create_impact_scatter(coin=coin_filter)
+                st.plotly_chart(fig1, use_container_width=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 2: Lambda Comparison (only for 'All Coins')
+            if selected_coin_impact_analysis == 'All Coins':
+                st.markdown("### 💎 Kyle's Lambda by Asset")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig2 = impact_viz.create_lambda_comparison()
+                    st.plotly_chart(fig2, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 3: Impact by Size Bucket
+            st.markdown("### 📊 Impact by Trade Size Bucket")
+            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                fig3 = impact_viz.create_impact_by_size_bucket(coin=coin_filter)
+                st.plotly_chart(fig3, use_container_width=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 4: Temporal Impact
+            rolling_window_impact = st.slider(
+                "Rolling Window for Temporal Analysis",
+                min_value=10,
+                max_value=200,
+                value=50,
+                key='rolling_window_impact'
+            )
+            
+            st.markdown("### ⏱️ Market Impact Over Time")
+            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                fig4 = impact_viz.create_temporal_impact(coin=coin_filter, window=rolling_window_impact)
+                st.plotly_chart(fig4, use_container_width=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 5: Wallet Execution Efficiency
+            if selected_coin_impact_analysis != 'All Coins':
+                st.markdown("### 🎯 Wallet Execution Efficiency")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    df_wallet_impact = loader.calculate_impact_by_wallet(coin=coin_filter, top_n=30)
+                    fig5 = impact_viz.create_wallet_impact_efficiency(df_wallet_impact)
+                    st.plotly_chart(fig5, use_container_width=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 6: Liquidity Quality Matrix (only for 'All Coins')
+            if selected_coin_impact_analysis == 'All Coins':
+                st.markdown("### 🌟 Liquidity Quality Matrix")
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig6 = impact_viz.create_liquidity_quality_matrix()
+                    st.plotly_chart(fig6, use_container_width=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Interpretation guide
+        with st.expander("📖 How to Interpret Market Impact Analysis", expanded=False):
+            st.markdown("""
+            ### 🧠 What is Market Impact?
+            
+            **Market Impact** measures how much a trade moves the price:
+            - **Kyle's Lambda (λ)**: Price change per unit traded
+            - **Formula:** `Impact = λ × Trade Size`
+            - **Lower impact** = More liquid market, better execution
+            
+            ---
+            
+            ### 📊 Reading the Charts
+            
+            **1. Trade Size vs Price Impact (Scatter)**
+            - **X-axis**: Trade size in USD
+            - **Y-axis**: How much price changed (%)
+            - **Regression line**: Kyle's Lambda estimate
+            - **R²**: How well size predicts impact
+            - **Color**: Time between trades (liquidity indicator)
+            
+            **Key Insight:** Steeper slope = Higher impact = Less liquid
+            
+            **2. Kyle's Lambda by Asset**
+            - **Green bars**: Low impact (good liquidity)
+            - **Orange bars**: High impact (poor liquidity)
+            - **Median line**: Market average
+            - **Use**: Choose low-impact assets for large trades
+            
+            **3. Impact by Trade Size Bucket**
+            - Shows how impact changes with trade size
+            - **Non-linear**: Larger trades often have disproportionate impact
+            - **Error bars**: Impact variability
+            - **Use**: Optimal trade sizing
+            
+            **4. Temporal Impact Analysis**
+            - **Top chart**: Rolling average impact over time
+            - **Bottom chart**: Trading volume
+            - **Rising impact**: Market getting less liquid
+            - **Spikes**: Temporary liquidity crunches
+            
+            **5. Wallet Execution Efficiency**
+            - **Lower = Better**: Lower impact per $1M
+            - **Bubble size**: Average trade size
+            - **Color**: Taker ratio (red = aggressive, green = patient)
+            - **Use**: Identify skilled traders
+            
+            **6. Liquidity Quality Matrix**
+            - **Best quadrant**: High volume, low impact (top right to bottom right)
+            - **Bubble size**: Number of trades (more = more reliable)
+            - **Color**: R² (darker = more predictable impact)
+            
+            ---
+            
+            ### 🎯 Research Applications
+            
+            1. **Execution Cost Analysis**: Estimate slippage before trading
+            2. **Liquidity Comparison**: Which assets have deepest markets?
+            3. **Optimal Execution**: Size trades to minimize impact
+            4. **Market Quality**: Measure market efficiency
+            5. **Manipulation Detection**: Abnormal impact = potential manipulation
+            
+            ---
+            
+            ### 📚 Key Metrics
+            
+            **Kyle's Lambda Interpretation:**
+            - **<0.1% per $1M**: Excellent liquidity (BTC, ETH typically)
+            - **0.1-0.5%**: Good liquidity (major altcoins)
+            - **0.5-2.0%**: Moderate liquidity (mid-caps)
+            - **>2.0%**: Poor liquidity (small caps, be careful!)
+            
+            **Execution Efficiency:**
+            - **Low impact traders**: Patient, use limit orders, good timing
+            - **High impact traders**: Aggressive, market orders, poor timing
+            - **Whales with low impact**: Sophisticated execution algorithms
+            
+            ---
+            
+            ### ⚠️ Important Notes
+            
+            - Impact varies by time of day (liquidity cycles)
+            - Volatile periods have higher impact
+            - Our estimate uses trade-to-trade price changes (simplified)
+            - True impact includes temporary vs permanent components
+            - Multiple small trades often better than one large trade
+            
+            ---
+            
+            ### 💡 Trading Implications
+            
+            **For Large Orders:**
+            1. Check Kyle's Lambda first
+            2. Split into smaller pieces (TWAP/VWAP)
+            3. Trade during high liquidity periods
+            4. Consider impact cost in strategy P&L
+            
+            **For Market Making:**
+            1. Low lambda = tight spreads possible
+            2. High lambda = need wider spreads
+            3. Monitor temporal changes
+            
+            **For Research:**
+            1. Market efficiency metric
+            2. Compare to other exchanges
+            3. Test order execution algorithms
+            """)
+    
+    # ========== TAB 11: Data Explorer ==========
+    with tab11:
         st.markdown('<p class="sub-header">Data Explorer</p>', 
                     unsafe_allow_html=True)
         
