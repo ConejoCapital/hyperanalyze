@@ -54,6 +54,11 @@ uploaded_data.json
 temp_data.json
 downloaded_data.json
 
+# Exclude hyperorderbook-specific files (wrong repo)
+index.html
+VERCEL_FIX.md
+orderbook_viz.py
+
 # Streamlit
 .streamlit/
 
