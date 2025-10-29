@@ -1788,3 +1788,436 @@ class OrderFlowImbalance:
         
         return fig
 
+"""
+Multi-Asset Correlation Matrix Visualization Class
+"""
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
+import plotly.figure_factory as ff
+
+
+class CorrelationMatrix:
+    """Visualizations for multi-asset correlation analysis"""
+    
+    def __init__(self, corr_matrix: pd.DataFrame, returns: pd.DataFrame = None, prices: pd.DataFrame = None):
+        """
+        Initialize with correlation data
+        
+        Args:
+            corr_matrix: Correlation matrix (coins × coins)
+            returns: Returns DataFrame (time × coins)
+            prices: Price DataFrame (time × coins)
+        """
+        self.corr_matrix = corr_matrix
+        self.returns = returns
+        self.prices = prices
+    
+    def create_correlation_heatmap(self, title_suffix: str = "") -> go.Figure:
+        """
+        Interactive correlation heatmap
+        
+        Returns:
+            Plotly figure
+        """
+        # Create heatmap
+        fig = go.Figure(data=go.Heatmap(
+            z=self.corr_matrix.values,
+            x=self.corr_matrix.columns,
+            y=self.corr_matrix.index,
+            colorscale='RdBu_r',
+            zmid=0,
+            zmin=-1,
+            zmax=1,
+            colorbar=dict(
+                title="Correlation",
+                tickvals=[-1, -0.5, 0, 0.5, 1],
+                ticktext=['-1.0', '-0.5', '0.0', '0.5', '1.0']
+            ),
+            hovertemplate='<b>%{x} vs %{y}</b><br>' +
+                          'Correlation: %{z:.3f}<extra></extra>',
+            text=np.round(self.corr_matrix.values, 2),
+            texttemplate='%{text}',
+            textfont=dict(size=10),
+            showscale=True
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text=f"<b>Multi-Asset Correlation Matrix{title_suffix}</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Asset",
+            yaxis_title="Asset",
+            height=700,
+            width=800,
+            template='plotly_dark',
+            xaxis=dict(tickangle=45),
+            yaxis=dict(autorange='reversed')  # Top to bottom
+        )
+        
+        return fig
+    
+    def create_correlation_network(self, threshold: float = 0.5) -> go.Figure:
+        """
+        Network graph showing correlation clusters
+        
+        Args:
+            threshold: Minimum correlation to show edge
+            
+        Returns:
+            Plotly figure
+        """
+        import networkx as nx
+        
+        # Create graph
+        G = nx.Graph()
+        
+        # Add nodes
+        coins = list(self.corr_matrix.columns)
+        for coin in coins:
+            G.add_node(coin)
+        
+        # Add edges for correlations above threshold
+        for i, coin1 in enumerate(coins):
+            for j, coin2 in enumerate(coins):
+                if i < j:  # Avoid duplicates
+                    corr = self.corr_matrix.loc[coin1, coin2]
+                    if abs(corr) >= threshold:
+                        G.add_edge(coin1, coin2, weight=abs(corr), sign=np.sign(corr))
+        
+        # Layout using spring layout
+        pos = nx.spring_layout(G, k=2, iterations=50)
+        
+        # Create edge traces
+        edge_traces = []
+        
+        for edge in G.edges(data=True):
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            weight = edge[2]['weight']
+            sign = edge[2]['sign']
+            
+            # Color by correlation sign
+            color = 'rgba(0,255,0,0.5)' if sign > 0 else 'rgba(255,0,0,0.5)'
+            
+            edge_trace = go.Scatter(
+                x=[x0, x1, None],
+                y=[y0, y1, None],
+                mode='lines',
+                line=dict(width=weight*3, color=color),
+                hoverinfo='none',
+                showlegend=False
+            )
+            edge_traces.append(edge_trace)
+        
+        # Create node trace
+        node_x = []
+        node_y = []
+        node_text = []
+        node_size = []
+        
+        for node in G.nodes():
+            x, y = pos[node]
+            node_x.append(x)
+            node_y.append(y)
+            node_text.append(node)
+            # Size by degree (number of connections)
+            node_size.append(G.degree(node) * 5 + 10)
+        
+        node_trace = go.Scatter(
+            x=node_x,
+            y=node_y,
+            mode='markers+text',
+            text=node_text,
+            textposition='top center',
+            marker=dict(
+                size=node_size,
+                color='lightblue',
+                line=dict(color='white', width=2)
+            ),
+            hovertemplate='<b>%{text}</b><br>Connections: %{marker.size}<extra></extra>',
+            showlegend=False
+        )
+        
+        # Create figure
+        fig = go.Figure(data=edge_traces + [node_trace])
+        
+        fig.update_layout(
+            title=dict(
+                text=f"<b>Correlation Network (|r| ≥ {threshold})</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            showlegend=False,
+            hovermode='closest',
+            height=700,
+            template='plotly_dark',
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            annotations=[
+                dict(
+                    text="Green = Positive Correlation | Red = Negative Correlation",
+                    xref="paper", yref="paper",
+                    x=0.5, y=-0.05,
+                    showarrow=False,
+                    font=dict(size=12, color="gray")
+                )
+            ]
+        )
+        
+        return fig
+    
+    def create_lead_lag_chart(self, lead_lag_df: pd.DataFrame, coin1: str, coin2: str) -> go.Figure:
+        """
+        Lead-lag correlation analysis
+        
+        Args:
+            lead_lag_df: DataFrame from calculate_lead_lag_correlation()
+            coin1: First coin name
+            coin2: Second coin name
+            
+        Returns:
+            Plotly figure
+        """
+        fig = go.Figure()
+        
+        # Add correlation line
+        fig.add_trace(go.Scatter(
+            x=lead_lag_df['lag'],
+            y=lead_lag_df['correlation'],
+            mode='lines+markers',
+            name='Correlation',
+            line=dict(color='cyan', width=2),
+            marker=dict(size=8),
+            hovertemplate='<b>Lag:</b> %{x}<br>' +
+                          '<b>Correlation:</b> %{y:.3f}<extra></extra>'
+        ))
+        
+        # Find max correlation
+        max_idx = lead_lag_df['correlation'].abs().idxmax()
+        max_lag = lead_lag_df.loc[max_idx, 'lag']
+        max_corr = lead_lag_df.loc[max_idx, 'correlation']
+        
+        # Add marker for max
+        fig.add_trace(go.Scatter(
+            x=[max_lag],
+            y=[max_corr],
+            mode='markers',
+            name='Peak Correlation',
+            marker=dict(size=15, color='red', symbol='star'),
+            hovertemplate=f'<b>Peak at lag {max_lag}</b><br>Correlation: {max_corr:.3f}<extra></extra>'
+        ))
+        
+        # Determine leader
+        if max_lag < 0:
+            leader_text = f"{coin2} leads {coin1} by {abs(max_lag)} periods"
+        elif max_lag > 0:
+            leader_text = f"{coin1} leads {coin2} by {max_lag} periods"
+        else:
+            leader_text = f"{coin1} and {coin2} move simultaneously"
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text=f"<b>Lead-Lag Analysis: {coin1} vs {coin2}</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            xaxis_title="Lag (periods)",
+            yaxis_title="Correlation",
+            height=600,
+            template='plotly_dark',
+            annotations=[
+                dict(
+                    text=leader_text,
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05,
+                    showarrow=False,
+                    font=dict(size=14, color="yellow"),
+                    xanchor='center'
+                ),
+                dict(
+                    text="Negative lag = coin2 leads | Positive lag = coin1 leads",
+                    xref="paper", yref="paper",
+                    x=0.5, y=-0.15,
+                    showarrow=False,
+                    font=dict(size=11, color="gray")
+                )
+            ]
+        )
+        
+        # Add zero lines
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+        fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
+        
+        return fig
+    
+    def create_rolling_correlation(self, coin1: str, coin2: str, window: int = 20) -> go.Figure:
+        """
+        Rolling correlation over time
+        
+        Args:
+            coin1: First coin
+            coin2: Second coin
+            window: Rolling window size
+            
+        Returns:
+            Plotly figure
+        """
+        if self.returns is None:
+            return go.Figure().add_annotation(
+                text="Returns data required for rolling correlation",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+        
+        # Calculate rolling correlation
+        rolling_corr = self.returns[coin1].rolling(window=window).corr(self.returns[coin2])
+        
+        # Create figure with subplots
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.1,
+            subplot_titles=(
+                f'Rolling Correlation ({window}-period window)',
+                'Price Movements'
+            ),
+            row_heights=[0.6, 0.4]
+        )
+        
+        # Rolling correlation
+        fig.add_trace(
+            go.Scatter(
+                x=rolling_corr.index,
+                y=rolling_corr.values,
+                mode='lines',
+                name='Rolling Correlation',
+                line=dict(color='cyan', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(0,255,255,0.1)'
+            ),
+            row=1, col=1
+        )
+        
+        # Add horizontal lines for reference
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
+        fig.add_hline(y=0.5, line_dash="dot", line_color="green", opacity=0.5, row=1, col=1)
+        fig.add_hline(y=-0.5, line_dash="dot", line_color="red", opacity=0.5, row=1, col=1)
+        
+        # Prices (normalized)
+        if self.prices is not None:
+            price1_norm = self.prices[coin1] / self.prices[coin1].iloc[0] * 100
+            price2_norm = self.prices[coin2] / self.prices[coin2].iloc[0] * 100
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=price1_norm.index,
+                    y=price1_norm.values,
+                    mode='lines',
+                    name=coin1,
+                    line=dict(color='green', width=2)
+                ),
+                row=2, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=price2_norm.index,
+                    y=price2_norm.values,
+                    mode='lines',
+                    name=coin2,
+                    line=dict(color='orange', width=2)
+                ),
+                row=2, col=1
+            )
+        
+        # Update layout
+        fig.update_layout(
+            title=dict(
+                text=f"<b>Rolling Correlation: {coin1} vs {coin2}</b>",
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, family='Arial Black')
+            ),
+            height=800,
+            template='plotly_dark',
+            hovermode='x unified',
+            yaxis_title="Correlation",
+            yaxis2_title="Normalized Price (Base=100)",
+            showlegend=True
+        )
+        
+        return fig
+    
+    def create_diversification_metrics(self) -> go.Figure:
+        """
+        Diversification and clustering analysis
+        
+        Returns:
+            Plotly figure with metrics
+        """
+        # Calculate metrics
+        avg_corr = self.corr_matrix.values[np.triu_indices_from(self.corr_matrix.values, k=1)].mean()
+        max_corr_pair = self.corr_matrix.stack().sort_values(ascending=False).iloc[1]  # Skip 1.0 diagonal
+        min_corr_pair = self.corr_matrix.stack().sort_values().iloc[0]
+        
+        # Identify most/least correlated pairs
+        corr_stack = self.corr_matrix.stack()
+        corr_stack = corr_stack[corr_stack < 0.9999]  # Remove self-correlations
+        
+        most_corr_idx = corr_stack.idxmax()
+        least_corr_idx = corr_stack.idxmin()
+        
+        # Create bar chart of average correlations per coin
+        avg_corr_per_coin = self.corr_matrix.mean().sort_values(ascending=False)
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            x=avg_corr_per_coin.index,
+            y=avg_corr_per_coin.values,
+            marker_color='lightblue',
+            hovertemplate='<b>%{x}</b><br>Avg Correlation: %{y:.3f}<extra></extra>'
+        ))
+        
+        # Add average line
+        fig.add_hline(
+            y=avg_corr,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Market Avg: {avg_corr:.3f}",
+            annotation_position="right"
+        )
+        
+        # Update layout
+        title_text = f"<b>Diversification Analysis</b><br>" + \
+                     f"<sub>Avg Market Correlation: {avg_corr:.3f} | " + \
+                     f"Most Correlated: {most_corr_idx[0]}-{most_corr_idx[1]} ({max_corr_pair:.2f}) | " + \
+                     f"Least: {least_corr_idx[0]}-{least_corr_idx[1]} ({min_corr_pair:.2f})</sub>"
+        
+        fig.update_layout(
+            title=dict(
+                text=title_text,
+                x=0.5,
+                xanchor='center',
+                font=dict(size=18, family='Arial Black')
+            ),
+            xaxis_title="Asset",
+            yaxis_title="Average Correlation with Other Assets",
+            height=600,
+            template='plotly_dark',
+            xaxis=dict(tickangle=45)
+        )
+        
+        return fig
+

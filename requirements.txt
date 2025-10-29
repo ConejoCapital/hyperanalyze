@@ -14,6 +14,7 @@ numba>=0.57.0  # JIT compilation for numerical functions
 
 # Statistical analysis
 scipy>=1.10.0  # For correlation and regression analysis
+networkx>=3.0  # For network graph visualization
 
 # Development/Testing
 ipython>=8.12.0

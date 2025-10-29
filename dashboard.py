@@ -15,7 +15,8 @@ from visualizations import (
     TraderAnalytics,
     OrderbookImpactAnalysis,
     LiquidationAnalysis,
-    OrderFlowImbalance
+    OrderFlowImbalance,
+    CorrelationMatrix
 )
 import os
 from pathlib import Path
@@ -182,7 +183,7 @@ def main():
     st.sidebar.info(f"**Time Range:**  \n{df['timestamp'].min().strftime('%Y-%m-%d %H:%M')}  \nto  \n{df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "🔥 Order Book Heatmap",
         "🔄 Maker vs Taker Flow",
         "📏 Spread Analysis",
@@ -191,6 +192,7 @@ def main():
         "🎯 Wallet Impact",
         "💥 Liquidations",
         "📈 Order Flow Imbalance",
+        "🔗 Asset Correlation",
         "📋 Data Explorer"
     ])
     
@@ -1182,8 +1184,254 @@ def main():
                 - Correlation with future returns typically 0.1-0.3
                 """)
     
-    # ========== TAB 9: Data Explorer ==========
+    # ========== TAB 9: Asset Correlation ==========
     with tab9:
+        st.markdown('<p class="sub-header">Multi-Asset Correlation Analysis</p>', 
+                    unsafe_allow_html=True)
+        st.markdown("Understand how different assets move together")
+        
+        # Controls
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            top_n_corr = st.slider(
+                "Number of top coins to analyze",
+                min_value=5,
+                max_value=30,
+                value=15,
+                key='top_n_corr'
+            )
+        
+        with col2:
+            time_window_corr = st.selectbox(
+                "Time Window for Returns",
+                options=['30S', '1T', '5T', '15T', '1H'],
+                index=1,
+                key='time_window_corr'
+            )
+        
+        st.markdown("---")
+        st.markdown(f"<h2 style='text-align: center;'><b>Correlation Analysis - Top {top_n_corr} Assets</b></h2>", 
+                   unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        with st.spinner("Calculating correlation matrix..."):
+            # Calculate correlation
+            corr_matrix, returns, prices = loader.calculate_correlation_matrix(
+                top_n=top_n_corr,
+                time_window=time_window_corr
+            )
+            
+            corr_viz = CorrelationMatrix(corr_matrix, returns, prices)
+            
+            # Chart 1: Correlation Heatmap
+            st.markdown("### 🔥 Correlation Heatmap")
+            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                fig1 = corr_viz.create_correlation_heatmap()
+                st.plotly_chart(fig1, use_container_width=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 2: Correlation Network
+            threshold = st.slider(
+                "Network Edge Threshold (min correlation)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.1,
+                key='network_threshold'
+            )
+            
+            st.markdown("### 🕸️ Correlation Network")
+            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                fig2 = corr_viz.create_correlation_network(threshold=threshold)
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 3: Lead-Lag Analysis
+            st.markdown("### ⏱️ Lead-Lag Analysis")
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            
+            with col1:
+                coin1_leadlag = st.selectbox(
+                    "Coin 1 (Potential Leader)",
+                    options=list(corr_matrix.columns),
+                    index=0,
+                    key='coin1_leadlag'
+                )
+            
+            with col2:
+                coin2_leadlag = st.selectbox(
+                    "Coin 2 (Potential Follower)",
+                    options=list(corr_matrix.columns),
+                    index=1 if len(corr_matrix.columns) > 1 else 0,
+                    key='coin2_leadlag'
+                )
+            
+            with col3:
+                max_lag = st.slider(
+                    "Max Lag Periods",
+                    min_value=5,
+                    max_value=50,
+                    value=10,
+                    key='max_lag_corr'
+                )
+            
+            if coin1_leadlag != coin2_leadlag:
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    with st.spinner("Calculating lead-lag..."):
+                        leadlag_df = loader.calculate_lead_lag_correlation(
+                            coin1_leadlag,
+                            coin2_leadlag,
+                            max_lag=max_lag,
+                            time_window='30S'
+                        )
+                        fig3 = corr_viz.create_lead_lag_chart(leadlag_df, coin1_leadlag, coin2_leadlag)
+                        st.plotly_chart(fig3, use_container_width=True)
+            else:
+                st.warning("Please select two different coins for lead-lag analysis")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 4: Rolling Correlation
+            st.markdown("### 📊 Rolling Correlation Over Time")
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            
+            with col1:
+                coin1_rolling = st.selectbox(
+                    "Coin 1",
+                    options=list(corr_matrix.columns),
+                    index=0,
+                    key='coin1_rolling'
+                )
+            
+            with col2:
+                coin2_rolling = st.selectbox(
+                    "Coin 2",
+                    options=list(corr_matrix.columns),
+                    index=1 if len(corr_matrix.columns) > 1 else 0,
+                    key='coin2_rolling'
+                )
+            
+            with col3:
+                rolling_window = st.slider(
+                    "Rolling Window",
+                    min_value=10,
+                    max_value=100,
+                    value=20,
+                    key='rolling_window'
+                )
+            
+            if coin1_rolling != coin2_rolling:
+                with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                    fig4 = corr_viz.create_rolling_correlation(coin1_rolling, coin2_rolling, window=rolling_window)
+                    st.plotly_chart(fig4, use_container_width=True)
+            else:
+                st.warning("Please select two different coins for rolling correlation")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart 5: Diversification Metrics
+            st.markdown("### 🎯 Diversification Analysis")
+            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                fig5 = corr_viz.create_diversification_metrics()
+                st.plotly_chart(fig5, use_container_width=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Interpretation guide
+        with st.expander("📖 How to Interpret Correlation Analysis", expanded=False):
+            st.markdown("""
+            ### 🧠 What is Correlation?
+            
+            **Correlation** measures how two assets move together:
+            - **+1.0** = Perfect positive correlation (move in same direction)
+            - **0.0** = No correlation (move independently)
+            - **-1.0** = Perfect negative correlation (move in opposite directions)
+            
+            ---
+            
+            ### 📊 Reading the Charts
+            
+            **1. Correlation Heatmap**
+            - **Red cells**: Strong positive correlation (move together)
+            - **Blue cells**: Strong negative correlation (move opposite)
+            - **White cells**: No correlation (independent)
+            - **Diagonal**: Always 1.0 (asset vs itself)
+            
+            **2. Correlation Network**
+            - **Connected nodes**: Correlated assets (above threshold)
+            - **Green edges**: Positive correlation
+            - **Red edges**: Negative correlation (rare in crypto)
+            - **Larger nodes**: More connections (market leaders)
+            - **Clusters**: Assets that move together as a group
+            
+            **3. Lead-Lag Analysis**
+            - **Peak at negative lag**: Coin 2 leads Coin 1
+            - **Peak at positive lag**: Coin 1 leads Coin 2
+            - **Peak at zero**: They move simultaneously
+            - **Use**: Identify which assets are market leaders
+            
+            **4. Rolling Correlation**
+            - **Rising line**: Correlation increasing (coupling)
+            - **Falling line**: Correlation decreasing (decoupling)
+            - **Spikes**: Temporary high correlation (market events)
+            - **Use**: Identify regime changes
+            
+            **5. Diversification Metrics**
+            - **High avg correlation**: Asset moves with the market
+            - **Low avg correlation**: Good for diversification
+            - **Use**: Build uncorrelated portfolios
+            
+            ---
+            
+            ### 🎯 Research Applications
+            
+            1. **Portfolio Construction**: Choose uncorrelated assets
+            2. **Risk Management**: Understand systemic risk
+            3. **Market Leadership**: Identify which coins lead vs follow
+            4. **Regime Detection**: Spot when correlations break down
+            5. **Pair Trading**: Find temporarily decoupled pairs
+            
+            ---
+            
+            ### 📚 Key Insights
+            
+            **High Correlation (>0.7)**:
+            - Assets move together
+            - No diversification benefit
+            - Often linked by fundamentals
+            
+            **Medium Correlation (0.3-0.7)**:
+            - Some co-movement
+            - Moderate diversification
+            - Market-dependent relationship
+            
+            **Low Correlation (<0.3)**:
+            - Independent movement
+            - Good diversification
+            - Different market drivers
+            
+            **Negative Correlation**:
+            - Rare in crypto (most correlations positive)
+            - Excellent for hedging
+            - Often temporary
+            
+            ---
+            
+            ### ⚠️ Important Notes
+            
+            - Correlation ≠ Causation
+            - Correlations change over time (use rolling window)
+            - High volatility periods often see increased correlations
+            - Market-wide events cause temporary spikes
+            """)
+    
+    # ========== TAB 10: Data Explorer ==========
+    with tab10:
         st.markdown('<p class="sub-header">Data Explorer</p>', 
                     unsafe_allow_html=True)
         

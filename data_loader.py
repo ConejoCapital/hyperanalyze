@@ -478,6 +478,126 @@ class HyperliquidDataLoader:
         
         return df_grouped
     
+    def calculate_correlation_matrix(self, top_n: int = 20, time_window: str = '1T') -> tuple:
+        """
+        Calculate correlation matrix for price movements across assets
+        
+        Args:
+            top_n: Number of top coins by volume to include
+            time_window: Time aggregation window for returns
+            
+        Returns:
+            Tuple of (correlation_matrix, returns_df, price_df)
+        """
+        if self.df_trades is None:
+            raise ValueError("Must load data first with load_misc_events()")
+        
+        print(f"Calculating correlation matrix (top {top_n} coins, window={time_window})...")
+        
+        # Get top coins by volume
+        top_coins = self.df_trades.groupby('coin')['notional'].sum().nlargest(top_n).index.tolist()
+        
+        df = self.df_trades[self.df_trades['coin'].isin(top_coins)].copy()
+        
+        # Aggregate prices by time window
+        price_data = df.groupby([
+            pd.Grouper(key='timestamp', freq=time_window),
+            'coin'
+        ]).agg({
+            'px': 'last',  # Close price
+            'notional': 'sum'  # Volume
+        }).reset_index()
+        
+        # Pivot to wide format (time × coins)
+        price_pivot = price_data.pivot_table(
+            index='timestamp',
+            columns='coin',
+            values='px',
+            aggfunc='last'
+        )
+        
+        # Forward fill missing values (if a coin has no trades in a window)
+        price_pivot = price_pivot.fillna(method='ffill').fillna(method='bfill')
+        
+        # Calculate returns
+        returns = price_pivot.pct_change().dropna()
+        
+        # Calculate correlation matrix
+        corr_matrix = returns.corr()
+        
+        print(f"Correlation matrix calculated for {len(top_coins)} coins")
+        print(f"Time range: {price_pivot.index.min()} to {price_pivot.index.max()}")
+        print(f"Data points per coin: {len(price_pivot)}")
+        
+        return corr_matrix, returns, price_pivot
+    
+    def calculate_lead_lag_correlation(self, coin1: str, coin2: str, 
+                                       max_lag: int = 10, time_window: str = '30S') -> pd.DataFrame:
+        """
+        Calculate lead-lag correlation between two coins
+        
+        Args:
+            coin1: First coin (potential leader)
+            coin2: Second coin (potential follower)
+            max_lag: Maximum lag periods to test
+            time_window: Time aggregation window
+            
+        Returns:
+            DataFrame with lag periods and correlations
+        """
+        if self.df_trades is None:
+            raise ValueError("Must load data first with load_misc_events()")
+        
+        print(f"Calculating lead-lag correlation: {coin1} vs {coin2}...")
+        
+        # Get price data for both coins
+        df1 = self.df_trades[self.df_trades['coin'] == coin1].copy()
+        df2 = self.df_trades[self.df_trades['coin'] == coin2].copy()
+        
+        # Aggregate by time
+        prices1 = df1.groupby(pd.Grouper(key='timestamp', freq=time_window))['px'].last()
+        prices2 = df2.groupby(pd.Grouper(key='timestamp', freq=time_window))['px'].last()
+        
+        # Align timestamps
+        df_combined = pd.DataFrame({
+            'price1': prices1,
+            'price2': prices2
+        }).fillna(method='ffill').dropna()
+        
+        # Calculate returns
+        df_combined['return1'] = df_combined['price1'].pct_change()
+        df_combined['return2'] = df_combined['price2'].pct_change()
+        
+        # Calculate correlation at different lags
+        lag_results = []
+        
+        for lag in range(-max_lag, max_lag + 1):
+            if lag < 0:
+                # coin2 leads coin1
+                corr = df_combined['return1'].corr(df_combined['return2'].shift(-lag))
+                leader = coin2
+                follower = coin1
+            elif lag > 0:
+                # coin1 leads coin2
+                corr = df_combined['return1'].shift(lag).corr(df_combined['return2'])
+                leader = coin1
+                follower = coin2
+            else:
+                # Contemporaneous
+                corr = df_combined['return1'].corr(df_combined['return2'])
+                leader = 'Simultaneous'
+                follower = 'Simultaneous'
+            
+            lag_results.append({
+                'lag': lag,
+                'correlation': corr,
+                'leader': leader if lag != 0 else 'Simultaneous',
+                'follower': follower if lag != 0 else 'Simultaneous',
+                'lag_seconds': lag * pd.Timedelta(time_window).total_seconds()
+            })
+        
+        return pd.DataFrame(lag_results)
+    
     def save_processed_data(self, output_path: str = 'processed_data.parquet'):
         """
         Save processed data to Parquet for faster loading
