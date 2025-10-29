@@ -67,8 +67,10 @@ def load_data(data_path: str, max_lines: int = None):
     """Load and cache data"""
     loader = HyperliquidDataLoader(misc_events_path=data_path)
     
-    # Check if processed data exists
-    processed_path = 'processed_data.parquet'
+    # Create unique cache file per data source
+    import hashlib
+    path_hash = hashlib.md5(data_path.encode()).hexdigest()[:8]
+    processed_path = f'processed_data_{path_hash}.parquet'
     
     if os.path.exists(processed_path):
         st.info("Loading from cached processed data...")
