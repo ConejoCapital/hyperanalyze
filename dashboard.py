@@ -100,13 +100,48 @@ def main():
     st.sidebar.title("⚙️ Configuration")
     
     # Data loading
-    st.sidebar.header("Data Settings")
+    st.sidebar.header("📁 Data Source")
     
-    data_path = st.sidebar.text_input(
-        "Data Path",
-        value="/Users/thebunnymac/Desktop/hyperorderbook/Hyperliquid Data Expanded/node_fills_20251027_1700-1800.json",
-        help="Use node_fills for trade data, misc_events for other event types"
+    # Data source selection
+    data_source = st.sidebar.radio(
+        "Choose data source:",
+        ["📊 Use sample data (demo)", "📤 Upload your own file", "📂 Use local file path"],
+        help="Sample data: 1000 blocks for demo. Upload: Use your own Hyperliquid data."
     )
+    
+    data_path = None
+    
+    if data_source == "📊 Use sample data (demo)":
+        # Use included sample data
+        data_path = "sample_data.json"
+        st.sidebar.info("Using sample dataset (1000 blocks, ~3MB)")
+        
+    elif data_source == "📤 Upload your own file":
+        # File uploader
+        uploaded_file = st.sidebar.file_uploader(
+            "Upload node_fills JSON file",
+            type=['json'],
+            help="Upload your Hyperliquid historical data file"
+        )
+        
+        if uploaded_file:
+            # Save temporarily
+            temp_path = 'uploaded_data.json'
+            with open(temp_path, 'wb') as f:
+                f.write(uploaded_file.read())
+            data_path = temp_path
+            st.sidebar.success(f"Uploaded: {uploaded_file.name}")
+        else:
+            st.sidebar.warning("⬆️ Please upload a data file to continue")
+            st.info("👈 Upload your Hyperliquid data file using the sidebar")
+            st.stop()
+            
+    else:  # Use local file path
+        data_path = st.sidebar.text_input(
+            "Local File Path",
+            value="Hyperliquid Data Expanded/node_fills_20251027_1700-1800.json",
+            help="Path to your local node_fills JSON file"
+        )
     
     use_limit = st.sidebar.checkbox("Limit data for testing", value=False)
     max_lines = st.sidebar.number_input(

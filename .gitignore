@@ -46,6 +46,14 @@ Hyperliquid Data Expanded/*.json
 *.txt
 LARGEkSHIB.txt
 
+# BUT include the sample data for demos
+!sample_data.json
+
+# Exclude uploaded/temporary data
+uploaded_data.json
+temp_data.json
+downloaded_data.json
+
 # Streamlit
 .streamlit/
 
