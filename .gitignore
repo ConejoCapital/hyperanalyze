@@ -43,8 +43,10 @@ processed_data.parquet
 
 # Large data files (too large for GitHub - use Git LFS or external storage)
 Hyperliquid Data Expanded/*.json
+Hyperliquid Data Expanded/*.json.gz
 *.txt
 LARGEkSHIB.txt
+orderbook_*.parquet
 
 # BUT include the sample data for demos
 !sample_data.json

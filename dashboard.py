@@ -19,6 +19,14 @@ from visualizations import (
     CorrelationMatrix,
     MarketImpactAnalysis
 )
+from orderbook_loader import OrderBookLoader
+from orderbook_visualizations import (
+    OrderBookDepthChart,
+    LiquidityHeatmap,
+    ImbalanceAnalysis,
+    SpreadAnalysisOrderBook,
+    OrderLifecycleAnalysis
+)
 import os
 from pathlib import Path
 
@@ -186,7 +194,7 @@ def main():
     st.sidebar.info(f"**Time Range:**  \n{df['timestamp'].min().strftime('%Y-%m-%d %H:%M')}  \nto  \n{df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}")
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
         "🔥 Order Book Heatmap",
         "🔄 Maker vs Taker Flow",
         "📏 Spread Analysis",
@@ -197,6 +205,7 @@ def main():
         "📈 Order Flow Imbalance",
         "🔗 Asset Correlation",
         "💎 Market Impact",
+        "📖 Order Book Dynamics",
         "📋 Data Explorer"
     ])
     
@@ -1694,6 +1703,304 @@ def main():
         st.dataframe(df_display_raw, use_container_width=True, hide_index=True)
         
         st.info(f"Showing 100 of {len(df_filtered):,} filtered rows")
+    
+    # ========== TAB 12: Order Book Dynamics ==========
+    with tab12:
+        st.markdown('<p class="sub-header">📖 Order Book Dynamics (Level 2)</p>', 
+                    unsafe_allow_html=True)
+        st.markdown("Deep dive into order book microstructure using full L2 data")
+        
+        # Check if orderbook file exists
+        orderbook_path = "Hyperliquid Data Expanded/Hyperliquid_orderbooks.json.gz"
+        
+        if not os.path.exists(orderbook_path):
+            st.warning("⚠️ Order book data file not found!")
+            st.info(f"Please ensure `{orderbook_path}` exists in your directory.")
+            st.markdown("""
+            **This tab requires the orderbook data file:**
+            - File: `Hyperliquid_orderbooks.json.gz`
+            - Size: ~430MB compressed
+            - Events: ~50 million order book events
+            """)
+        else:
+            # Controls
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                selected_coin_ob = st.selectbox(
+                    "Select Coin for Order Book Analysis",
+                    options=['BTC', 'ETH', 'SOL', 'DOGE', 'AVAX', 'MATIC', 'ARB'],
+                    index=0,
+                    key='coin_orderbook'
+                )
+            
+            with col2:
+                max_events_ob = st.number_input(
+                    "Max Events (0=all)",
+                    min_value=0,
+                    max_value=10000000,
+                    value=500000,
+                    step=100000,
+                    key='max_events_ob',
+                    help="Limit events for faster processing (0 = load all)"
+                )
+            
+            with col3:
+                sample_interval = st.selectbox(
+                    "Sample Interval",
+                    options=['1S', '5S', '10S', '30S', '1Min'],
+                    index=2,
+                    key='sample_interval_ob'
+                )
+            
+            st.markdown("---")
+            
+            # Load order book data with caching
+            @st.cache_data(show_spinner=False)
+            def load_orderbook_data(coin, max_events):
+                """Load and process orderbook data"""
+                ob_loader = OrderBookLoader(orderbook_path)
+                
+                # Try to load from cache first
+                cache_path = f'orderbook_{coin}_{max_events}.parquet'
+                if os.path.exists(cache_path):
+                    ob_loader.load_processed_data(cache_path)
+                else:
+                    # Load fresh data
+                    ob_loader.load_events(
+                        max_events=max_events if max_events > 0 else None,
+                        coins_filter=[coin]
+                    )
+                    # Save cache
+                    ob_loader.save_processed_data(cache_path)
+                
+                return ob_loader
+            
+            with st.spinner(f"Loading order book data for {selected_coin_ob}..."):
+                try:
+                    ob_loader = load_orderbook_data(selected_coin_ob, max_events_ob)
+                    
+                    if ob_loader.df_events is None or len(ob_loader.df_events) == 0:
+                        st.warning(f"No order book data found for {selected_coin_ob}")
+                    else:
+                        st.success(f"✅ Loaded {len(ob_loader.df_events):,} order book events for {selected_coin_ob}")
+                        
+                        # Reconstruct order book state
+                        with st.spinner("Reconstructing order book state..."):
+                            df_snapshots = ob_loader.reconstruct_order_book(
+                                selected_coin_ob,
+                                sample_interval=sample_interval
+                            )
+                        
+                        if len(df_snapshots) == 0:
+                            st.warning("No valid order book snapshots generated")
+                        else:
+                            st.success(f"✅ Generated {len(df_snapshots)} order book snapshots")
+                            
+                            # ===== Chart 1: Depth Evolution =====
+                            st.markdown("### 📈 Order Book Depth Evolution")
+                            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                                depth_chart = OrderBookDepthChart(df_snapshots)
+                                fig1 = depth_chart.create_depth_evolution_chart()
+                                st.plotly_chart(fig1, use_container_width=True)
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # ===== Chart 2: Depth Distribution =====
+                            st.markdown("### 📊 Bid/Ask Depth & Imbalance")
+                            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                                fig2 = depth_chart.create_depth_distribution_chart()
+                                st.plotly_chart(fig2, use_container_width=True)
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # ===== Chart 3: Imbalance Analysis =====
+                            st.markdown("### ⚖️ Order Book Imbalance Analysis")
+                            with st.expander("🔍 Expand for Full Screen View", expanded=True):
+                                imbalance_viz = ImbalanceAnalysis(df_snapshots)
+                                fig3 = imbalance_viz.create_imbalance_timeseries()
+                                st.plotly_chart(fig3, use_container_width=True)
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # ===== Chart 4: Spread Analysis =====
+                            st.markdown("### 📏 Spread Dynamics")
+                            with st.expander("🔍 Expand for Full Screen View", expanded=False):
+                                spread_viz = SpreadAnalysisOrderBook(df_snapshots)
+                                fig4 = spread_viz.create_spread_analysis_chart()
+                                st.plotly_chart(fig4, use_container_width=True)
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # ===== Chart 5: Liquidity Heatmap =====
+                            st.markdown("### 🔥 Liquidity Heatmap (Price × Time)")
+                            with st.expander("🔍 Expand for Full Screen View", expanded=False):
+                                with st.spinner("Generating liquidity heatmap..."):
+                                    df_heatmap = ob_loader.get_liquidity_heatmap_data(
+                                        selected_coin_ob,
+                                        price_range_pct=2.0,
+                                        num_bins=50
+                                    )
+                                    
+                                    if len(df_heatmap) > 0:
+                                        heatmap_viz = LiquidityHeatmap(df_heatmap)
+                                        fig5 = heatmap_viz.create_heatmap()
+                                        st.plotly_chart(fig5, use_container_width=True)
+                                    else:
+                                        st.warning("Not enough data for heatmap visualization")
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # ===== Chart 6: Order Lifecycle =====
+                            st.markdown("### ⏱️ Order Lifecycle Analysis")
+                            with st.expander("🔍 Expand for Full Screen View", expanded=False):
+                                with st.spinner("Analyzing order lifecycles..."):
+                                    df_lifecycle = ob_loader.get_order_lifecycle_stats(selected_coin_ob)
+                                    
+                                    if len(df_lifecycle) > 0:
+                                        lifecycle_viz = OrderLifecycleAnalysis(df_lifecycle)
+                                        
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            fig6a = lifecycle_viz.create_outcome_breakdown()
+                                            st.plotly_chart(fig6a, use_container_width=True)
+                                        with col2:
+                                            fig6b = lifecycle_viz.create_fill_rate_by_side()
+                                            st.plotly_chart(fig6b, use_container_width=True)
+                                        
+                                        fig6c = lifecycle_viz.create_lifetime_distribution()
+                                        st.plotly_chart(fig6c, use_container_width=True)
+                                    else:
+                                        st.warning("No lifecycle data available")
+                            
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            
+                            # Interpretation Guide
+                            with st.expander("📖 How to Interpret Order Book Dynamics", expanded=False):
+                                st.markdown("""
+                                ### 🧠 Understanding Order Book Microstructure
+                                
+                                **What is Level 2 Order Book Data?**
+                                - Shows ALL limit orders at different price levels
+                                - Updates in real-time as orders are placed/filled/canceled
+                                - More detailed than just trade data (Level 1)
+                                
+                                ---
+                                
+                                ### 📊 Reading the Charts
+                                
+                                **1. Depth Evolution Chart**
+                                - **Best Bid/Ask**: Tightest prices where orders exist
+                                - **Mid-Price**: Average of best bid and ask
+                                - **Spread**: Cost of immediate execution
+                                - **Narrow spread** = Liquid market, low trading cost
+                                
+                                **2. Depth & Imbalance**
+                                - **Bid Depth**: Total buy orders within 1% of mid
+                                - **Ask Depth**: Total sell orders within 1% of mid
+                                - **Imbalance**: `(Bid - Ask) / (Bid + Ask)`
+                                  - Positive = More bids (bullish pressure)
+                                  - Negative = More asks (bearish pressure)
+                                
+                                **3. Imbalance Analysis**
+                                - **Green bars**: More buying pressure
+                                - **Red bars**: More selling pressure
+                                - **Extreme values** (>0.5 or <-0.5): Strong directional pressure
+                                - Often predicts short-term price moves
+                                
+                                **4. Spread Dynamics**
+                                - **Absolute spread**: Dollar cost of crossing
+                                - **% spread**: Relative cost (better for comparison)
+                                - **Tighter spreads**: More market makers active
+                                - **Wider spreads**: Volatile or thin market
+                                
+                                **5. Liquidity Heatmap**
+                                - **Hot colors** (red/yellow): High liquidity concentration
+                                - **Cold colors** (blue): Sparse liquidity
+                                - **Horizontal bands**: Price levels with persistent orders
+                                - **Gaps**: Price levels avoiding (resistance/support)
+                                
+                                **6. Order Lifecycle**
+                                - **Filled orders**: Successful execution
+                                - **Canceled orders**: Changed mind or adjusted
+                                - **Rejected orders**: Invalid (price too aggressive)
+                                - **Short lifetime**: Aggressive orders or fast market
+                                - **Long lifetime**: Patient makers or slow market
+                                
+                                ---
+                                
+                                ### 🎯 Research Applications
+                                
+                                1. **Market Making Strategy**
+                                   - Where do successful orders get placed?
+                                   - How long before they get filled?
+                                   - Optimal queue position?
+                                
+                                2. **Liquidity Analysis**
+                                   - When is the market most/least liquid?
+                                   - Where are the "walls" of liquidity?
+                                   - Support/resistance levels?
+                                
+                                3. **Price Prediction**
+                                   - Does imbalance predict price moves?
+                                   - Lead-lag relationship?
+                                   - Early warning signals?
+                                
+                                4. **Execution Quality**
+                                   - Best time to execute large orders?
+                                   - Expected slippage?
+                                   - Optimal order size?
+                                
+                                5. **Manipulation Detection**
+                                   - Spoofing (place then cancel)?
+                                   - Layering (false depth)?
+                                   - Quote stuffing (rapid place/cancel)?
+                                
+                                ---
+                                
+                                ### 💡 Key Insights
+                                
+                                **Order Book Imbalance:**
+                                - Strong predictor of short-term (1-10 second) price moves
+                                - More reliable when combined with trade flow
+                                - Reset after large trades
+                                
+                                **Spread Behavior:**
+                                - Widens before large price moves (uncertainty)
+                                - Tightens in stable markets (competition)
+                                - Spikes during liquidity crunches
+                                
+                                **Order Placement:**
+                                - Most orders placed near best bid/ask
+                                - Patient makers place deeper in book
+                                - Aggressive orders cross spread immediately
+                                
+                                **Lifecycle Patterns:**
+                                - ~60-80% of limit orders get canceled (typical)
+                                - Median lifetime: 5-30 seconds (varies by coin)
+                                - Bids have different fill rates than asks
+                                
+                                ---
+                                
+                                ### 📚 Academic References
+                                
+                                1. **Cont, R., Kukanov, A., & Stoikov, S. (2014)**: "The Price Impact of Order Book Events"
+                                2. **Gould, M. D., et al. (2013)**: "Limit order books"
+                                3. **Hasbrouck, J. (2007)**: "Empirical Market Microstructure"
+                                
+                                ---
+                                
+                                ### ⚠️ Important Notes
+                                
+                                - This data is historical (research purposes)
+                                - Real-time requires live data feed
+                                - Patterns vary by time of day and market conditions
+                                - Always validate findings statistically
+                                """)
+                
+                except Exception as e:
+                    st.error(f"Error loading order book data: {str(e)}")
+                    st.info("Try reducing the max events parameter or selecting a different coin")
     
     # Footer
     st.markdown("---")
