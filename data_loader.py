@@ -143,6 +143,13 @@ class HyperliquidDataLoader:
         # Clean up coin names (remove @ prefix for some tickers)
         df['coin_clean'] = df['coin'].astype(str)
         
+        # Filter out invalid coins (starting with @ = internal/test markets)
+        initial_count = len(df)
+        df = df[~df['coin'].astype(str).str.startswith('@')].copy()
+        filtered_count = initial_count - len(df)
+        if filtered_count > 0:
+            print(f"  Filtered out {filtered_count} trades from internal markets (@XXX tokens)")
+        
         # Sort by timestamp
         df = df.sort_values('timestamp').reset_index(drop=True)
         
